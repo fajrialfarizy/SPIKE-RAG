@@ -92,7 +92,9 @@ RETRIEVAL_CROSS_REPORT_MAX_CHUNKS_PER_REPORT = 2
 # Catalog Mode Settings
 RETRIEVAL_CATALOG_MAX_REPORTS = 50
 
-# Similarity threshold (to be tuned in Phase 4; initial conservative threshold)
+# Similarity threshold (similarity = 1 - cosine distance).
+# TODO(Phase 4): this is a conservative placeholder. It must be tuned from the
+# evaluation set (Brief 5.5 / PRD 8.1), not guessed; do not treat it as final.
 RETRIEVAL_SIMILARITY_THRESHOLD = 0.50
 
 # Regex Patterns
@@ -233,3 +235,107 @@ LOG_FILE_PREFIX = "ingestion"
 # Authentication Settings
 AUTH_MAX_FAILED_ATTEMPTS = 5
 AUTH_LOCKOUT_DURATION_SECONDS = 300  # 5 minutes
+
+
+# ---------------------------------------------------------------------------
+# Context header robustness (Brief 5.3)
+# Overlong metadata is truncated with an ellipsis inside the chunk header instead
+# of aborting the document. Chroma metadata keeps the full, untruncated value, so
+# filters and citations still see the real competition name.
+CONTEXT_HEADER_COMPETITION_NAME_MAX_CHARS = 120
+CONTEXT_HEADER_JUDUL_IDE_MAX_CHARS = 160
+CONTEXT_HEADER_ELLIPSIS = "\u2026"
+
+
+# ---------------------------------------------------------------------------
+# Core RAG (Phase 2). No magic numbers: every value lives here.
+
+# Logging for the chat pipeline. Operational metadata only: never question text,
+# answers, document text or the API key.
+CORE_LOG_FILE_PREFIX = "chat"
+
+# Groq client (https://console.groq.com/docs, checked 2026-11-20)
+# openai/gpt-oss-20b supports reasoning_effort low|medium|high (default medium).
+# reasoning_format is NOT supported for GPT-OSS models: reasoning is returned in
+# message.reasoning, and include_reasoning=False keeps it out of the response.
+LLM_API_KEY_ENV_VAR = "GROQ_API_KEY"
+LLM_INCLUDE_REASONING = False
+LLM_REASONING_EFFORT_ANALYZER = "low"
+LLM_REASONING_EFFORT_ANSWER = "medium"
+LLM_ANALYZER_MAX_OUTPUT_TOKENS = 400
+LLM_JSON_MODE_ENABLED = True
+LLM_JSON_RESPONSE_FORMAT = {"type": "json_object"}
+LLM_RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
+LLM_RETRY_BASE_DELAY_SECONDS = 1.0
+LLM_RETRY_MAX_DELAY_SECONDS = 8.0
+
+# Analyzer (LLM call #1)
+ANALYZER_MAX_SEARCH_QUERY_CHARS = 300
+ANALYZER_FALLBACK_MODE = "specific"
+ANALYZER_MAX_QUESTION_CHARS = CHAT_MAX_INPUT_CHARS
+
+# Retrieval limits per mode: k chunks returned, max chunks per report.
+RETRIEVAL_LIMITS = {
+    "specific": {
+        "k": RETRIEVAL_SPECIFIC_K,
+        "max_per_report": RETRIEVAL_SPECIFIC_MAX_CHUNKS_PER_REPORT,
+    },
+    "cross_report": {
+        "k": RETRIEVAL_CROSS_REPORT_K,
+        "max_per_report": RETRIEVAL_CROSS_REPORT_MAX_CHUNKS_PER_REPORT,
+    },
+}
+
+# Context builder: one alias per unique report, document text wrapped as data.
+CONTEXT_ALIAS_PREFIX = "S"
+CONTEXT_DOCUMENT_OPEN_TEMPLATE = (
+    '<dokumen id={alias} kompetisi="{competition_name}" jenis="{competition_type}" '
+    'tahun="{competition_year}" pencapaian="{achievement_level}" '
+    'bagian="{section_type}">'
+)
+CONTEXT_DOCUMENT_CLOSE_TAG = "</dokumen>"
+CONTEXT_DOCUMENT_SEPARATOR = "\n\n"
+CONTEXT_CATALOG_OPEN_TAG = "<daftar_laporan>"
+CONTEXT_CATALOG_CLOSE_TAG = "</daftar_laporan>"
+CONTEXT_CATALOG_LINE_TEMPLATE = (
+    '- {alias} | kompetisi="{competition_name}" jenis="{competition_type}" '
+    'tahun="{competition_year}" pencapaian="{achievement_level}"'
+)
+
+# Citations (Brief 5.6)
+CITATION_REPORT_ID_PATTERN = re.compile(r"RPT[0-9]{4,}")
+SOURCE_BLOCK_TITLE = "**Sumber**"
+SOURCE_BLOCK_LINE_TEMPLATE = (
+    "- {report_id} — {competition_name} ({competition_type}, {competition_year}, "
+    "{achievement_level})"
+)
+SOURCE_BLOCK_SEPARATOR = "\n\n"
+
+# Output guardrails (Brief 5.7)
+# Narrow, targeted detector for requests about personal/administrative data.
+PATTERN_REQUEST_PII_ID_NUMBER = re.compile(r"(?i)\b(?:nim|npm|nrp|nomor\s+induk)\b")
+PATTERN_REQUEST_PII_CONTACT = re.compile(
+    r"(?i)\b(?:nomor\s+(?:telepon|hp|handphone|wa|whatsapp)|no\.?\s*(?:hp|wa)|whatsapp|"
+    r"e-?mail|surel|alamat(?:\s+rumah)?)\b"
+)
+PATTERN_REQUEST_PII_INTENT = re.compile(
+    r"(?i)\b(?:siapa|siapa\s+saja|nama|nomor|alamat|kontak|berikan|sebutkan|tampilkan|"
+    r"minta|mengungkap|apa)\b"
+)
+PATTERN_REQUEST_PII_IDENTITY = re.compile(
+    r"(?i)\b(?:siapa|nama)\b.{0,40}\b(?:pelapor|ketua\s+tim|anggota\s+tim|mentor|"
+    r"pembimbing|mahasiswa)\b"
+)
+PATTERN_REQUEST_PII_PERSONAL_DATA = re.compile(
+    r"(?i)\b(?:data\s+pribadi|identitas\s+(?:pelapor|ketua\s+tim|anggota\s+tim|mentor|"
+    r"pembimbing|mahasiswa))\b"
+)
+PATTERN_REQUEST_PII_ENGLISH = re.compile(
+    r"(?i)\b(?:student\s+id|phone\s+number|contact\s+number|email\s+address|"
+    r"who\s+is\s+the\s+(?:leader|reporter|mentor|supervisor|member))\b"
+)
+
+# System-prompt leak detector: shingle overlap between answer and system prompt.
+LEAK_NGRAM_SIZE = 8
+LEAK_MIN_MATCHED_SHINGLES = 3
+LEAK_OVERLAP_RATIO_THRESHOLD = 0.5

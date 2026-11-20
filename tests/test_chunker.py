@@ -174,3 +174,64 @@ def test_chunk_id_pattern_is_stable():
 
     for chunk in chunks:
         assert re.fullmatch(r"RPT0001:executive_summary:\d{2}", chunk.chunk_id)
+
+
+def test_overlong_competition_name_is_truncated_in_header():
+    """C4: long metadata must not fail the document."""
+    chunker = make_chunker()
+    long_name = "Lomba " + words(200)
+    long_idea = "Ide " + words(200)
+
+    kwargs = dict(HEADER_ARGS, competition_name=long_name, judul_ide=long_idea)
+    chunks = chunker.chunk_section(
+        section_type=SectionType.EVALUASI_TIM,
+        section_content="Tim bekerja sangat baik.",
+        **kwargs,
+    )
+
+    assert len(chunks) == 1
+    header = chunks[0].document_text.split("\n\n", 1)[0]
+    assert config.CONTEXT_HEADER_ELLIPSIS in header
+    assert long_name not in header
+    assert long_idea not in header
+
+    name_part = header.split("Kompetisi: ", 1)[1].split(" (", 1)[0]
+    idea_part = header.split("Judul ide: ", 1)[1].split(" | Bagian:", 1)[0]
+    assert len(name_part) <= config.CONTEXT_HEADER_COMPETITION_NAME_MAX_CHARS
+    assert len(idea_part) <= config.CONTEXT_HEADER_JUDUL_IDE_MAX_CHARS
+
+    # The stored metadata keeps the complete value for filters and citations.
+    assert chunks[0].metadata["competition_name"] == long_name
+    assert chunks[0].token_count <= config.CHUNK_HARD_LIMIT_TOKENS
+
+
+def test_header_within_limits_is_not_altered():
+    chunker = make_chunker()
+    chunks = chunker.chunk_section(
+        section_type=SectionType.EVALUASI_TIM,
+        section_content="Isi.",
+        **HEADER_ARGS,
+    )
+
+    assert config.CONTEXT_HEADER_ELLIPSIS not in chunks[0].document_text
+    assert "Kompetisi: Lomba Contoh (Essay, 2024)" in chunks[0].document_text
+
+
+def test_header_still_raises_when_content_budget_is_exhausted(monkeypatch):
+    """The explicit error survives only for a genuinely impossible budget."""
+    monkeypatch.setattr(config, "CONTEXT_HEADER_COMPETITION_NAME_MAX_CHARS", 100_000)
+    monkeypatch.setattr(config, "CONTEXT_HEADER_JUDUL_IDE_MAX_CHARS", 100_000)
+
+    chunker = make_chunker()
+    kwargs = dict(
+        HEADER_ARGS,
+        competition_name=words(600),
+        judul_ide=words(600),
+    )
+
+    with pytest.raises(ValueError, match="no room"):
+        chunker.chunk_section(
+            section_type=SectionType.EVALUASI_TIM,
+            section_content="Isi.",
+            **kwargs,
+        )

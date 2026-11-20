@@ -82,6 +82,43 @@ class SectionAwareChunker:
         return self._resolve_counter()(text)
 
     @staticmethod
+    def _truncate_for_header(value: str, max_chars: int) -> str:
+        """
+        Fit a header field into its configured character budget.
+
+        Long competition names or idea titles are truncated with an ellipsis
+        instead of failing the whole document (Phase 1 closeout C4). The value
+        stored in Chroma metadata stays complete; only the header is shortened.
+        """
+        text = " ".join(str(value).split())
+        if len(text) <= max_chars:
+            return text
+        keep = max_chars - len(config.CONTEXT_HEADER_ELLIPSIS)
+        if keep <= 0:
+            return config.CONTEXT_HEADER_ELLIPSIS
+        return text[:keep].rstrip() + config.CONTEXT_HEADER_ELLIPSIS
+
+    def build_context_header(
+        self,
+        competition_name: str,
+        competition_type: str,
+        competition_year: int,
+        judul_ide: str,
+        label: str,
+    ) -> str:
+        """Build the chunk context header with bounded metadata fields."""
+        name = self._truncate_for_header(
+            competition_name, config.CONTEXT_HEADER_COMPETITION_NAME_MAX_CHARS
+        )
+        idea = self._truncate_for_header(
+            judul_ide, config.CONTEXT_HEADER_JUDUL_IDE_MAX_CHARS
+        )
+        return (
+            f"Kompetisi: {name} ({competition_type}, {competition_year}) | "
+            f"Judul ide: {idea} | Bagian: {label}"
+        )
+
+    @staticmethod
     def split_into_sentences(text: str) -> List[str]:
         """Split on sentence boundaries without breaking mid-sentence."""
         raw = re.split(r"(?<=[.!?])\s+", text)
@@ -175,9 +212,12 @@ class SectionAwareChunker:
         ``Kompetisi: {name} ({type}, {year}) | Judul ide: {judul} | Bagian: {label}``
         """
         label = self.SECTION_LABELS[section_type]
-        header = (
-            f"Kompetisi: {competition_name} ({competition_type}, {competition_year}) | "
-            f"Judul ide: {judul_ide} | Bagian: {label}"
+        header = self.build_context_header(
+            competition_name=competition_name,
+            competition_type=competition_type,
+            competition_year=competition_year,
+            judul_ide=judul_ide,
+            label=label,
         )
         passage_prefix = config.EMBEDDING_PASSAGE_PREFIX
         header_tokens = self.count_tokens(f"{passage_prefix}{header}\n\n")
