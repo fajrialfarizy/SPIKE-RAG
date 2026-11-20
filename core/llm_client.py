@@ -79,11 +79,18 @@ class GroqLLMClient(LLMClient):
         model_name: str = config.LLM_MODEL_NAME,
         client: Optional[Any] = None,
         sleep_fn: Callable[[float], None] = time.sleep,
+        instruction_role: str = config.LLM_INSTRUCTION_ROLE,
     ):
+        if instruction_role not in config.LLM_INSTRUCTION_ROLES:
+            raise LLMConfigurationError(
+                f"LLM_INSTRUCTION_ROLE '{instruction_role}' is not supported; "
+                f"use one of {config.LLM_INSTRUCTION_ROLES}."
+            )
         self.model_name = model_name
         self._api_key = api_key
         self._client = client
         self._sleep = sleep_fn
+        self.instruction_role = instruction_role
 
     # -- configuration -----------------------------------------------------
     def _ensure_client(self):
@@ -156,6 +163,30 @@ class GroqLLMClient(LLMClient):
         # message.reasoning is deliberately never read.
         return content.strip()
 
+    def _build_messages(
+        self, system_prompt: str, user_prompt: str
+    ) -> list:
+        """Place the instruction block according to config.LLM_INSTRUCTION_ROLE."""
+        if self.instruction_role == "system":
+            return [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+        if self.instruction_role == "user_prefixed":
+            return [
+                {
+                    "role": "user",
+                    "content": (
+                        f"{system_prompt}{config.LLM_INSTRUCTION_USER_SEPARATOR}"
+                        f"{user_prompt}"
+                    ),
+                }
+            ]
+        raise LLMConfigurationError(
+            f"LLM_INSTRUCTION_ROLE '{self.instruction_role}' is not supported; "
+            f"use one of {config.LLM_INSTRUCTION_ROLES}."
+        )
+
     def _request_kwargs(
         self,
         system_prompt: str,
@@ -168,10 +199,7 @@ class GroqLLMClient(LLMClient):
     ) -> dict:
         kwargs: dict = {
             "model": self.model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            "messages": self._build_messages(system_prompt, user_prompt),
             "temperature": temperature,
             "max_completion_tokens": max_tokens,
             "reasoning_effort": reasoning_effort,

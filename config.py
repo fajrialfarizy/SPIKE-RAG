@@ -268,6 +268,12 @@ LLM_API_KEY_ENV_VAR = "GROQ_API_KEY"
 LLM_INCLUDE_REASONING = False
 LLM_REASONING_EFFORT_ANALYZER = "low"
 LLM_REASONING_EFFORT_ANSWER = "medium"
+# Where the instruction block goes. "system" (default) keeps a system message;
+# "user_prefixed" puts the same text at the start of the user message. Only an
+# explicit A/B test should change it.
+LLM_INSTRUCTION_ROLE = "system"
+LLM_INSTRUCTION_ROLES = ("system", "user_prefixed")
+LLM_INSTRUCTION_USER_SEPARATOR = "\n\n"
 LLM_ANALYZER_MAX_OUTPUT_TOKENS = 400
 LLM_JSON_MODE_ENABLED = True
 LLM_JSON_RESPONSE_FORMAT = {"type": "json_object"}
@@ -344,6 +350,28 @@ PATTERN_REQUEST_PII_PERSONAL_DATA = re.compile(
 PATTERN_REQUEST_PII_ENGLISH = re.compile(
     r"(?i)\b(?:student\s+id|phone\s+number|contact\s+number|email\s+address|"
     r"who\s+is\s+the\s+(?:leader|reporter|mentor|supervisor|member))\b"
+)
+
+# Input-side instruction-override detector (report K4). Deliberately narrow: a
+# reveal/override verb must appear together with a target phrase, so legitimate
+# questions that merely contain "instruksi" or "prompt" still reach the model.
+PATTERN_SECURITY_PROMPT_EXTRACT = re.compile(
+    r"(?i)\b(?:tampilkan|tunjukkan|cetak|berikan|tulis(?:kan)?|ulangi|bocorkan|ungkapkan|"
+    r"reveal|show|print|display|repeat|leak|dump)\b[^.?!\n]{0,60}"
+    r"\b(?:system\s*prompt|prompt\s*sistem|instruksi\s*(?:sistem|internal|tersembunyi|awal)|"
+    r"konfigurasi\s*(?:internal|sistem|chatbot)|hidden\s+(?:instructions?|prompt)|"
+    r"system\s+instructions?|aturan\s+internal)\b"
+)
+PATTERN_SECURITY_INSTRUCTION_OVERRIDE = re.compile(
+    r"(?i)\b(?:abaikan|ignore|lupakan|forget|lewati|bypass)\b[^.?!\n]{0,40}"
+    r"\b(?:instruksi|instruction|aturan|rule|prompt)s?\b[^.?!\n]{0,30}"
+    r"\b(?:sebelumnya|sebelum|di\s*atas|previous(?:ly)?|above|earlier|prior)\b"
+)
+# Covers both word orders: "abaikan instruksi sebelumnya" and
+# "ignore previous instructions".
+PATTERN_SECURITY_IGNORE_PREVIOUS = re.compile(
+    r"(?i)\b(?:abaikan|ignore)\s+(?:semua\s+|all\s+)?"
+    r"(?:(?:previous|sebelumnya)\s+)?(?:instruksi|instructions?|prompts?|aturan|rules?)\b"
 )
 
 # System-prompt leak detector: shingle overlap between answer and system prompt.
