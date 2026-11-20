@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 import config
-from core.llm_client import LLMClient, LLMResponseError
+from core.llm_client import LLMClient, LLMResponseError, LLMResult, TokenUsage
 
 
 class WordCountTokenizer:
@@ -127,10 +127,12 @@ class FakeLLM(LLMClient):
         json_responses: Optional[List[str]] = None,
         text_responses: Optional[List[str]] = None,
         fail_with: Optional[BaseException] = None,
+        usage: Optional[TokenUsage] = None,
     ):
         self.json_responses = list(json_responses or [])
         self.text_responses = list(text_responses or [])
         self.fail_with = fail_with
+        self.usage = usage or TokenUsage()
         self.calls: List[Dict[str, Any]] = []
 
     def complete(
@@ -143,7 +145,7 @@ class FakeLLM(LLMClient):
         reasoning_effort: str,
         json_mode: bool = False,
         deadline: Optional[Any] = None,
-    ) -> str:
+    ) -> LLMResult:
         self.calls.append(
             {
                 "system_prompt": system_prompt,
@@ -162,7 +164,7 @@ class FakeLLM(LLMClient):
         queue = self.json_responses if json_mode else self.text_responses
         if not queue:
             raise LLMResponseError("FakeLLM has no scripted response left")
-        return queue.pop(0)
+        return LLMResult(content=queue.pop(0), usage=self.usage, latency_ms=0.0)
 
     @property
     def json_call_count(self) -> int:

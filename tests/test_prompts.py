@@ -76,6 +76,7 @@ def test_standard_response_map_covers_every_status():
         "not_found",
         "technical_error",
         "no_source",
+        "rate_limited",
         "privacy_refused",
         "security_refused",
     }

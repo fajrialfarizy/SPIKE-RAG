@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 import config
 from core import prompts
 from core.deadline import Deadline, DeadlineExceeded
-from core.llm_client import LLMClient, LLMError
+from core.llm_client import LLMClient, LLMError, LLMRateLimitError
 from enums import AchievementLevel, CompetitionType, QueryMode
 
 logger = logging.getLogger("core_analyzer")
@@ -48,6 +48,9 @@ class AnalyzerResult:
     filters: Dict[str, List[Any]] = field(default_factory=dict)
     used_fallback: bool = False
     dropped_invalid_values: int = 0
+    latency_ms: float = 0.0
+    usage: Dict[str, int] = field(default_factory=dict)
+    error_type: Optional[str] = None
 
 
 def parse_analyzer_output(raw: str) -> Dict[str, Any]:
@@ -112,7 +115,11 @@ def _clean_values(
 
 
 def validate_analysis(
-    payload: Dict[str, Any], question: str
+    payload: Dict[str, Any],
+    question: str,
+    *,
+    latency_ms: float = 0.0,
+    usage: Optional[Dict[str, int]] = None,
 ) -> AnalyzerResult:
     """Validate every analyzer field against the enum sets and config limits."""
     dropped = 0
@@ -169,6 +176,8 @@ def validate_analysis(
         filters=filters,
         used_fallback=False,
         dropped_invalid_values=dropped,
+        latency_ms=round(latency_ms, 1),
+        usage=dict(usage or {}),
     )
 
 
@@ -199,7 +208,9 @@ def _clean_years(raw_values: Any) -> tuple[List[int], int]:
     return sorted(kept), dropped
 
 
-def fallback_result(question: str, *, reason: str) -> AnalyzerResult:
+def fallback_result(
+    question: str, *, reason: str, latency_ms: float = 0.0
+) -> AnalyzerResult:
     """Fallback mandated by Brief 5.5: in scope, specific, no filters."""
     logger.warning("analyzer_fallback reason=%s", reason)
     return AnalyzerResult(
@@ -210,6 +221,8 @@ def fallback_result(question: str, *, reason: str) -> AnalyzerResult:
         ],
         filters={},
         used_fallback=True,
+        latency_ms=round(latency_ms, 1),
+        error_type=reason,
     )
 
 
@@ -224,7 +237,7 @@ class Analyzer:
         self, question: str, deadline: Optional[Deadline] = None
     ) -> AnalyzerResult:
         try:
-            raw = self.llm.complete(
+            completion = self.llm.complete(
                 self.system_prompt,
                 prompts.ANALYZER_USER_TEMPLATE.format(question=question),
                 temperature=config.LLM_TEMPERATURE_ANALYZER,
@@ -233,8 +246,9 @@ class Analyzer:
                 json_mode=True,
                 deadline=deadline,
             )
-        except DeadlineExceeded:
-            # The whole question is out of budget: do not degrade into a fallback.
+        except (DeadlineExceeded, LLMRateLimitError):
+            # A budget or allowance problem affects the whole question; a silent
+            # fallback would only spend another call that is certain to fail.
             raise
         except LLMError:
             return fallback_result(question, reason="llm_error")
@@ -242,9 +256,17 @@ class Analyzer:
             # No exception text is logged: it may contain provider payloads.
             return fallback_result(question, reason="unexpected_error")
 
+        latency_ms = completion.latency_ms
         try:
-            payload = parse_analyzer_output(raw)
+            payload = parse_analyzer_output(completion.content)
         except AnalyzerParseError:
-            return fallback_result(question, reason="invalid_json")
+            return fallback_result(
+                question, reason="invalid_json", latency_ms=latency_ms
+            )
 
-        return validate_analysis(payload, question)
+        return validate_analysis(
+            payload,
+            question,
+            latency_ms=latency_ms,
+            usage=completion.usage.to_dict(),
+        )

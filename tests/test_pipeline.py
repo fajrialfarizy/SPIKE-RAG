@@ -107,7 +107,7 @@ def test_specific_question_is_answered_with_citation_and_source_block():
     assert llm.calls[0]["system_prompt"] == prompts.ANALYZER_SYSTEM_PROMPT
     assert llm.calls[1]["system_prompt"] == prompts.SYSTEM_PROMPT
     assert llm.calls[1]["temperature"] == config.LLM_TEMPERATURE_CHAT
-    assert llm.calls[1]["reasoning_effort"] == config.LLM_REASONING_EFFORT_ANSWER
+    assert llm.calls[1]["reasoning_effort"] == config.ANSWER_REASONING_EFFORT
 
 
 def test_filters_are_reported_in_debug_and_applied():

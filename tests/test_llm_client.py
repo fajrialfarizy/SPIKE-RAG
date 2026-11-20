@@ -32,6 +32,20 @@ class APITimeoutError(Exception):
     """Class name matches the groq SDK timeout error the classifier looks for."""
 
 
+class FakeReasoningDetails:
+    def __init__(self, reasoning_tokens):
+        self.reasoning_tokens = reasoning_tokens
+
+
+class FakeUsage:
+    def __init__(self, prompt_tokens=11, completion_tokens=7, reasoning_tokens=0):
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+        self.reasoning_tokens = reasoning_tokens
+        self.total_tokens = prompt_tokens + completion_tokens
+        self.completion_tokens_details = FakeReasoningDetails(reasoning_tokens)
+
+
 class FakeMessage:
     def __init__(self, content, reasoning="rahasia penalaran internal"):
         self.content = content
@@ -44,8 +58,9 @@ class FakeChoice:
 
 
 class FakeResponse:
-    def __init__(self, content):
+    def __init__(self, content, usage=None):
         self.choices = [FakeChoice(content)]
+        self.usage = usage
 
 
 class FakeCompletions:
@@ -74,24 +89,56 @@ def make_client(outcomes, sleeps=None):
     return client, fake, sleeps
 
 
-def call(client, json_mode=False):
+def call_result(client, json_mode=False, deadline=None):
     return client.complete(
         PROMPT,
         USER,
         temperature=config.LLM_TEMPERATURE_CHAT,
         max_tokens=config.LLM_MAX_OUTPUT_TOKENS,
-        reasoning_effort=config.LLM_REASONING_EFFORT_ANSWER,
+        reasoning_effort=config.ANSWER_REASONING_EFFORT,
         json_mode=json_mode,
+        deadline=deadline,
     )
 
 
+def call(client, json_mode=False, deadline=None):
+    return call_result(client, json_mode=json_mode, deadline=deadline).content
+
+
 def test_returns_final_content_only_and_never_reasoning():
-    client, fake, _ = make_client([FakeResponse("Jawaban final [S1].")])
+    client, fake, _ = make_client([FakeResponse("Jawaban final [LAP1].")])
 
     answer = call(client)
 
-    assert answer == "Jawaban final [S1]."
+    assert answer == "Jawaban final [LAP1]."
     assert "penalaran" not in answer
+
+
+def test_token_usage_is_reported_per_call():
+    response = FakeResponse("ok", usage=FakeUsage(120, 40, 25))
+    client, _, _ = make_client([response])
+
+    result = call_result(client)
+
+    assert result.usage.prompt_tokens == 120
+    assert result.usage.completion_tokens == 40
+    assert result.usage.reasoning_tokens == 25
+    assert result.usage.to_dict()["total_tokens"] == 160
+    assert result.attempts == 1
+    assert result.latency_ms >= 0.0
+
+
+def test_a_response_without_usage_reports_zeroes():
+    client, _, _ = make_client([FakeResponse("ok")])
+
+    usage = call_result(client).usage.to_dict()
+
+    assert usage == {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+    }
 
 
 def test_request_payload_matches_verified_groq_contract():
@@ -103,7 +150,8 @@ def test_request_payload_matches_verified_groq_contract():
     assert request["messages"][0] == {"role": "system", "content": PROMPT}
     assert request["messages"][1] == {"role": "user", "content": USER}
     assert request["max_completion_tokens"] == config.LLM_MAX_OUTPUT_TOKENS
-    assert request["reasoning_effort"] == config.LLM_REASONING_EFFORT_ANSWER
+    assert request["reasoning_effort"] == config.ANSWER_REASONING_EFFORT
+    assert request["timeout"] == config.LLM_TIMEOUT_SECONDS
     # GPT-OSS: reasoning_format is unsupported; include_reasoning=False hides it.
     assert request["include_reasoning"] is False
     assert "reasoning_format" not in request
@@ -138,7 +186,7 @@ def test_retries_are_capped_and_raise_sanitized_error():
     assert len(sleeps) == config.LLM_MAX_RETRIES
     message = str(excinfo.value)
     assert "raw-provider-detail" not in message
-    assert "429" in message
+    assert "rate limited" in message
 
 
 @pytest.mark.parametrize("status", [500, 502, 503, 504])

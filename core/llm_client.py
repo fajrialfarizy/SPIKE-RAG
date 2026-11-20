@@ -8,22 +8,37 @@ Facts verified against https://console.groq.com/docs on 2026-11-20:
   models (``medium`` is the server default); other values are rejected with 400.
 - ``reasoning_format`` is NOT supported for GPT-OSS models. Reasoning is returned
   in ``message.reasoning``; ``include_reasoning=False`` removes it entirely.
-- JSON Object Mode (``response_format={"type": "json_object"}``) and structured
+- JSON Object Mode (``response_format={\"type\": \"json_object\"}``) and structured
   outputs (``json_schema``, ``strict: true``) are both supported for this model.
 
-Only the final ``message.content`` is ever returned. Reasoning content is never
-read, logged or surfaced. Retries are handled here (the SDK's own retry loop is
-disabled) so the retry policy is exactly the one in config, and error text is
-never passed through to callers or users.
+Rate limits (https://console.groq.com/docs/rate-limits, checked 2026-11-20):
+every response carries ``x-ratelimit-limit-*``, ``x-ratelimit-remaining-*`` and
+``x-ratelimit-reset-*`` headers; ``retry-after`` is sent only on a 429 and is the
+authoritative wait time. Request counters are per day, token counters per minute.
+
+Retry policy (owned here; the SDK's own retries are disabled):
+- 429 with ``retry-after``: honour the header, bounded by the remaining pipeline
+  deadline. If the wait cannot fit the budget, fail fast instead of retrying.
+- 429 with a daily-style reset (no header, or a reset far beyond one minute):
+  fail fast, because waiting a few seconds cannot help.
+- Otherwise: the exponential backoff from config.
+
+Only the final ``message.content`` is ever returned as the answer; reasoning
+content is never read, logged or surfaced, and provider text never reaches a
+caller. Token usage and per-call latency are reported alongside the content.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
+import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Optional
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Mapping, Optional
 
 import config
 from core.deadline import Deadline, DeadlineExceeded
@@ -43,8 +58,65 @@ class LLMUnavailableError(LLMError):
     """Raised when the provider is unreachable, rate limited or keeps failing."""
 
 
+class LLMRateLimitError(LLMUnavailableError):
+    """The final failure cause was a rate limit (RATE_LIMITED at the boundary)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: Optional[float] = None,
+        is_daily_limit: bool = False,
+    ):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+        self.is_daily_limit = is_daily_limit
+
+
 class LLMResponseError(LLMError):
     """Raised when the provider returns an unusable payload."""
+
+
+@dataclass(frozen=True)
+class TokenUsage:
+    """Token counts reported by the provider for one call."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+    total_tokens: int = 0
+
+    @property
+    def total(self) -> int:
+        if self.total_tokens:
+            return self.total_tokens
+        return self.prompt_tokens + self.completion_tokens + self.reasoning_tokens
+
+    def to_dict(self) -> Dict[str, int]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
+            "total_tokens": self.total,
+        }
+
+
+@dataclass(frozen=True)
+class LLMResult:
+    """The answer text plus the operational evidence a run needs."""
+
+    content: str
+    usage: TokenUsage = TokenUsage()
+    latency_ms: float = 0.0
+    attempts: int = 1
+
+    def to_metrics(self, name: str) -> Dict[str, Any]:
+        return {
+            "name": name,
+            "latency_ms": round(self.latency_ms, 1),
+            "attempts": self.attempts,
+            "usage": self.usage.to_dict(),
+        }
 
 
 class LLMClient(ABC):
@@ -61,13 +133,94 @@ class LLMClient(ABC):
         reasoning_effort: str,
         json_mode: bool = False,
         deadline: Optional[Deadline] = None,
-    ) -> str:
-        """Return the final answer content only (never reasoning)."""
+    ) -> LLMResult:
+        """Return the final content only (never reasoning)."""
+
+
+class LLMConcurrencyLimiter:
+    """
+    Process-wide cap on simultaneous provider calls (report F1e).
+
+    Streamlit runs sessions in threads, so concurrent questions would otherwise
+    collide on the same per-minute allowance. Waiting counts against the
+    question's deadline and never blocks forever.
+    """
+
+    def __init__(self, limit: int = config.LLM_MAX_CONCURRENT_CALLS):
+        if limit <= 0:
+            raise ValueError("LLM concurrency limit must be positive.")
+        self.limit = int(limit)
+        self._semaphore = threading.BoundedSemaphore(self.limit)
+        self.peak = 0
+        self._active = 0
+        self._lock = threading.Lock()
+
+    @contextmanager
+    def slot(self, deadline: Optional[Deadline] = None):
+        timeout = None if deadline is None else max(0.0, deadline.remaining())
+        if timeout is not None and timeout <= 0:
+            raise DeadlineExceeded("No budget is left to wait for an LLM slot.")
+        acquired = self._semaphore.acquire(
+            blocking=True, timeout=timeout
+        )
+        if not acquired:
+            raise DeadlineExceeded("Timed out waiting for an LLM concurrency slot.")
+        with self._lock:
+            self._active += 1
+            self.peak = max(self.peak, self._active)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._active -= 1
+            self._semaphore.release()
+
+
+_default_limiter: Optional[LLMConcurrencyLimiter] = None
+_default_limiter_lock = threading.Lock()
+
+
+def get_llm_limiter() -> LLMConcurrencyLimiter:
+    """The single process-wide limiter, created once from config."""
+    global _default_limiter
+    with _default_limiter_lock:
+        if _default_limiter is None:
+            _default_limiter = LLMConcurrencyLimiter(config.LLM_MAX_CONCURRENT_CALLS)
+        return _default_limiter
 
 
 def get_api_key() -> Optional[str]:
     """Read the API key from the environment. The value is never logged."""
     return os.environ.get(config.LLM_API_KEY_ENV_VAR)
+
+
+def _int_field(obj: Any, name: str) -> int:
+    value = getattr(obj, name, None)
+    if value is None and isinstance(obj, Mapping):
+        value = obj.get(name)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _duration_seconds(value: Any) -> Optional[float]:
+    """Parse Groq's reset durations such as ``6h12m3.5s`` and plain seconds."""
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+
+    matches = re.findall(r"(\d+(?:\.\d+)?)(ms|h|m|s|d)", text)
+    if not matches:
+        return None
+    factors = {"ms": 0.001, "s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+    return sum(float(number) * factors[unit] for number, unit in matches)
 
 
 class GroqLLMClient(LLMClient):
@@ -80,6 +233,8 @@ class GroqLLMClient(LLMClient):
         client: Optional[Any] = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         instruction_role: str = config.LLM_INSTRUCTION_ROLE,
+        limiter: Optional[LLMConcurrencyLimiter] = None,
+        clock: Callable[[], float] = time.perf_counter,
     ):
         if instruction_role not in config.LLM_INSTRUCTION_ROLES:
             raise LLMConfigurationError(
@@ -91,6 +246,8 @@ class GroqLLMClient(LLMClient):
         self._client = client
         self._sleep = sleep_fn
         self.instruction_role = instruction_role
+        self._limiter = limiter
+        self._clock = clock
 
     # -- configuration -----------------------------------------------------
     def _ensure_client(self):
@@ -119,13 +276,27 @@ class GroqLLMClient(LLMClient):
             max_retries=0,
         )
 
+    @property
+    def limiter(self) -> LLMConcurrencyLimiter:
+        if self._limiter is None:
+            self._limiter = get_llm_limiter()
+        return self._limiter
+
     # -- error classification ---------------------------------------------
     @staticmethod
-    def _classify_error(exc: BaseException) -> tuple[bool, str]:
-        """Map an exception to (retryable, short_reason) without leaking text."""
+    def _status_code(exc: BaseException) -> Optional[int]:
         status = getattr(exc, "status_code", None)
         if status is None:
             status = getattr(getattr(exc, "response", None), "status_code", None)
+        try:
+            return int(status) if status is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _classify_error(cls, exc: BaseException) -> tuple[bool, str]:
+        """Map an exception to (retryable, short_reason) without leaking text."""
+        status = cls._status_code(exc)
 
         name = type(exc).__name__
         if name in {"APITimeoutError", "TimeoutError", "ReadTimeout"}:
@@ -141,6 +312,17 @@ class GroqLLMClient(LLMClient):
         return False, "unexpected_error"
 
     @staticmethod
+    def _response_headers(exc: BaseException) -> Dict[str, str]:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            return {}
+        try:
+            return {str(key).lower(): str(value) for key, value in headers.items()}
+        except (AttributeError, TypeError, ValueError):
+            return {}
+
+    @staticmethod
     def _backoff_delay(attempt: int) -> float:
         """Exponential backoff for the given 1-based attempt number."""
         delay = config.LLM_RETRY_BASE_DELAY_SECONDS * (
@@ -148,9 +330,22 @@ class GroqLLMClient(LLMClient):
         )
         return min(delay, config.LLM_RETRY_MAX_DELAY_SECONDS)
 
+    @staticmethod
+    def _is_daily_limit(headers: Mapping[str, str]) -> bool:
+        """A daily window cannot be waited out inside one question."""
+        remaining = headers.get("x-ratelimit-remaining-requests")
+        reset = _duration_seconds(headers.get("x-ratelimit-reset-requests"))
+        if remaining is None:
+            return False
+        try:
+            exhausted = int(float(remaining)) <= 0
+        except (TypeError, ValueError):
+            return False
+        return exhausted and reset is not None and reset > config.LLM_DAILY_LIMIT_MIN_RESET_SECONDS
+
     # -- response handling -------------------------------------------------
     @staticmethod
-    def _extract_content(response: Any) -> str:
+    def _extract(response: Any) -> LLMResult:
         choices = getattr(response, "choices", None) or []
         if not choices:
             raise LLMResponseError("LLM response contained no choices.")
@@ -160,12 +355,20 @@ class GroqLLMClient(LLMClient):
         if not isinstance(content, str) or not content.strip():
             raise LLMResponseError("LLM returned an empty final answer.")
 
-        # message.reasoning is deliberately never read.
-        return content.strip()
+        usage_obj = getattr(response, "usage", None)
+        details = getattr(usage_obj, "completion_tokens_details", None)
+        usage = TokenUsage(
+            prompt_tokens=_int_field(usage_obj, "prompt_tokens"),
+            completion_tokens=_int_field(usage_obj, "completion_tokens"),
+            reasoning_tokens=_int_field(details, "reasoning_tokens"),
+            total_tokens=_int_field(usage_obj, "total_tokens"),
+        )
 
-    def _build_messages(
-        self, system_prompt: str, user_prompt: str
-    ) -> list:
+        # message.reasoning is deliberately never read.
+        return LLMResult(content=content.strip(), usage=usage)
+
+    # -- message assembly --------------------------------------------------
+    def _build_messages(self, system_prompt: str, user_prompt: str) -> list:
         """Place the instruction block according to config.LLM_INSTRUCTION_ROLE."""
         if self.instruction_role == "system":
             return [
@@ -222,10 +425,11 @@ class GroqLLMClient(LLMClient):
         reasoning_effort: str,
         json_mode: bool = False,
         deadline: Optional[Deadline] = None,
-    ) -> str:
+    ) -> LLMResult:
         self._ensure_client()
 
         max_attempts = config.LLM_MAX_RETRIES + 1
+        started = self._clock()
 
         for attempt in range(1, max_attempts + 1):
             if deadline is not None:
@@ -243,12 +447,24 @@ class GroqLLMClient(LLMClient):
                 timeout_seconds,
             )
             try:
-                response = self._client.chat.completions.create(**kwargs)
-                return self._extract_content(response)
+                with self.limiter.slot(deadline):
+                    response = self._client.chat.completions.create(**kwargs)
+                result = self._extract(response)
+                return LLMResult(
+                    content=result.content,
+                    usage=result.usage,
+                    latency_ms=(self._clock() - started) * 1000.0,
+                    attempts=attempt,
+                )
             except LLMError:
+                raise
+            except DeadlineExceeded:
                 raise
             except Exception as exc:
                 retryable, reason = self._classify_error(exc)
+                headers = self._response_headers(exc)
+                retry_after = _duration_seconds(headers.get("retry-after"))
+                is_rate_limited = self._status_code(exc) == 429 or reason == "http_429"
 
                 if not retryable:
                     logger.warning(
@@ -261,6 +477,56 @@ class GroqLLMClient(LLMClient):
                         f"LLM request failed ({reason}); it is not retryable."
                     ) from exc
 
+                if is_rate_limited:
+                    daily = self._is_daily_limit(headers)
+                    if retry_after is not None:
+                        remaining = (
+                            deadline.remaining()
+                            if deadline is not None
+                            else config.PIPELINE_TOTAL_DEADLINE_SECONDS
+                        )
+                        if retry_after > remaining:
+                            logger.warning(
+                                "llm_rate_limited_fast_fail retry_after=%.1fs "
+                                "remaining=%.1fs daily=%s",
+                                retry_after,
+                                remaining,
+                                daily,
+                            )
+                            raise LLMRateLimitError(
+                                "The provider asked for a wait longer than the "
+                                "remaining pipeline budget.",
+                                retry_after_seconds=retry_after,
+                                is_daily_limit=daily
+                                or retry_after > config.LLM_DAILY_LIMIT_MIN_RESET_SECONDS,
+                            ) from exc
+                        if attempt == max_attempts:
+                            raise LLMRateLimitError(
+                                f"LLM request was rate limited after {attempt} attempts.",
+                                retry_after_seconds=retry_after,
+                                is_daily_limit=daily,
+                            ) from exc
+                        logger.warning(
+                            "llm_rate_limited_retry attempt=%d/%d retry_after=%.1fs",
+                            attempt,
+                            max_attempts,
+                            retry_after,
+                        )
+                        if deadline is not None:
+                            deadline.sleep(retry_after, self._sleep)
+                        else:
+                            self._sleep(retry_after)
+                        continue
+
+                    if daily:
+                        logger.warning(
+                            "llm_rate_limited_fast_fail daily=true attempt=%d", attempt
+                        )
+                        raise LLMRateLimitError(
+                            "The provider's daily request allowance is exhausted.",
+                            is_daily_limit=True,
+                        ) from exc
+
                 if attempt == max_attempts:
                     logger.warning(
                         "llm_call_failed attempt=%d/%d error=%s retryable=true",
@@ -268,6 +534,12 @@ class GroqLLMClient(LLMClient):
                         max_attempts,
                         reason,
                     )
+                    if is_rate_limited:
+                        raise LLMRateLimitError(
+                            f"LLM request was rate limited after {attempt} attempts.",
+                            retry_after_seconds=retry_after,
+                            is_daily_limit=self._is_daily_limit(headers),
+                        ) from exc
                     raise LLMUnavailableError(
                         f"LLM request failed ({reason}) after {attempt} attempts."
                     ) from exc

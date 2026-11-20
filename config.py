@@ -267,7 +267,10 @@ CORE_LOG_FILE_PREFIX = "chat"
 LLM_API_KEY_ENV_VAR = "GROQ_API_KEY"
 LLM_INCLUDE_REASONING = False
 LLM_REASONING_EFFORT_ANALYZER = "low"
-LLM_REASONING_EFFORT_ANSWER = "medium"
+# Answer reasoning effort (report F1f). Default stays "medium"; the smoke
+# script can override it for a comparison run.
+ANSWER_REASONING_EFFORT = "medium"
+ANSWER_REASONING_EFFORT_VALUES = ("low", "medium", "high")
 # Where the instruction block goes. "system" (default) keeps a system message;
 # "user_prefixed" puts the same text at the start of the user message. Only an
 # explicit A/B test should change it.
@@ -280,6 +283,16 @@ LLM_JSON_RESPONSE_FORMAT = {"type": "json_object"}
 LLM_RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
 LLM_RETRY_BASE_DELAY_SECONDS = 1.0
 LLM_RETRY_MAX_DELAY_SECONDS = 8.0
+# A rate-limit reset beyond this is treated as a daily window: waiting can never
+# help inside one question, so the call fails fast instead of retrying.
+LLM_DAILY_LIMIT_MIN_RESET_SECONDS = 60.0
+# Process-wide cap on simultaneous provider calls (Streamlit runs in threads).
+LLM_MAX_CONCURRENT_CALLS = 2
+
+# Context token budget (report F1d). Chunks are dropped lowest-score first until
+# the rendered context fits, keeping one chunk per selected report when possible.
+MAX_CONTEXT_TOKENS = 3500
+CONTEXT_TOKEN_ESTIMATOR_CHARS_PER_TOKEN = 2.5
 
 # Analyzer (LLM call #1)
 ANALYZER_MAX_SEARCH_QUERY_CHARS = 300

@@ -115,6 +115,11 @@ TECHNICAL_ERROR_RESPONSE = (
     "beberapa saat lagi."
 )
 
+RATE_LIMITED_RESPONSE = (
+    "Layanan sedang menerima terlalu banyak permintaan. Silakan coba lagi dalam "
+    "beberapa menit."
+)
+
 NO_SOURCE_RESPONSE = (
     "Maaf, saya belum dapat menyusun jawaban yang dapat ditelusuri ke dokumen "
     "sumber. Coba ubah pertanyaanmu."
@@ -142,6 +147,7 @@ STANDARD_RESPONSES: Dict[str, str] = {
     "not_found": NOT_FOUND_RESPONSE,
     "technical_error": TECHNICAL_ERROR_RESPONSE,
     "no_source": NO_SOURCE_RESPONSE,
+    "rate_limited": RATE_LIMITED_RESPONSE,
     "privacy_refused": PRIVACY_REFUSAL_RESPONSE,
     "security_refused": SECURITY_REFUSAL_RESPONSE,
 }

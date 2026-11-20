@@ -10,10 +10,14 @@ map, which is the only place citations can come from.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 import config
 from core.retriever import RetrievedChunk
+
+
+class ContextBudgetError(RuntimeError):
+    """Raised when even a single chunk cannot fit the context token budget."""
 
 CONTEXT_ATTRIBUTE_FIELDS = (
     "competition_name",
@@ -101,6 +105,50 @@ class ContextBuilder:
             report_metadata=report_metadata,
             chunk_ids=chunk_ids,
         )
+
+    def build_chunks_within_budget(
+        self,
+        chunks: Sequence[RetrievedChunk],
+        token_counter: Any,
+        max_tokens: int = config.MAX_CONTEXT_TOKENS,
+    ) -> Tuple[ContextBundle, List[str]]:
+        """
+        Render the context and drop chunks until it fits the token budget.
+
+        The lowest-scoring chunk is dropped first, and a report keeps one chunk
+        for as long as any report still has more than one, so a multi-chunk
+        report cannot crowd every other report out. When the last remaining chunk
+        alone exceeds the budget the build fails loudly instead of truncating
+        document text.
+        """
+        remaining: List[RetrievedChunk] = list(chunks)
+
+        while remaining:
+            bundle = self.build_chunks(remaining)
+            if token_counter.count_tokens(bundle.text) <= max_tokens:
+                kept_ids = {chunk.chunk_id for chunk in remaining}
+                dropped = [
+                    chunk.chunk_id for chunk in chunks if chunk.chunk_id not in kept_ids
+                ]
+                return bundle, dropped
+
+            if len(remaining) == 1:
+                raise ContextBudgetError(
+                    f"A single chunk needs more than the {max_tokens}-token context "
+                    "budget; refusing to truncate document text."
+                )
+
+            per_report: Dict[str, int] = {}
+            for chunk in remaining:
+                per_report[chunk.report_id] = per_report.get(chunk.report_id, 0) + 1
+            removable = [
+                chunk for chunk in remaining if per_report[chunk.report_id] > 1
+            ]
+            pool = removable or remaining
+            victim = min(pool, key=lambda chunk: (chunk.score or 0.0, chunk.chunk_id))
+            remaining.remove(victim)
+
+        return self.build_chunks([]), [chunk.chunk_id for chunk in chunks]
 
     def build_catalog(
         self, reports: Sequence[Dict[str, Any]]

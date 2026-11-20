@@ -34,7 +34,8 @@ from core.guardrails import (
     detect_instruction_override,
     detect_privacy_request,
 )
-from core.llm_client import LLMClient
+from core.llm_client import LLMClient, LLMRateLimitError
+from core.tokens import EstimatorTokenCounter
 from core.retriever import Retriever, RetrievedChunk
 from enums import QueryMode
 from ingestion.embedder import E5Embedder
@@ -49,6 +50,7 @@ class AnswerStatus(str, Enum):
     PRIVACY_REFUSED = "PRIVACY_REFUSED"
     SECURITY_REFUSED = "SECURITY_REFUSED"
     NO_SOURCE = "NO_SOURCE"
+    RATE_LIMITED = "RATE_LIMITED"
     TECHNICAL_ERROR = "TECHNICAL_ERROR"
 
 
@@ -67,6 +69,14 @@ class DebugInfo:
     missing_report_ids: List[str] = field(default_factory=list)
     used_fallback: bool = False
     input_truncated: bool = False
+    calls: List[Dict[str, Any]] = field(default_factory=list)
+    token_usage: Dict[str, int] = field(default_factory=dict)
+    context_dropped_chunk_ids: List[str] = field(default_factory=list)
+    analyzer: Dict[str, Any] = field(default_factory=dict)
+    compare_by: Optional[str] = None
+    groups: List[Dict[str, Any]] = field(default_factory=list)
+    embedding_latency_ms: float = 0.0
+    deadline_budget_seconds: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -81,6 +91,14 @@ class DebugInfo:
             "missing_report_ids": self.missing_report_ids,
             "used_fallback": self.used_fallback,
             "input_truncated": self.input_truncated,
+            "calls": self.calls,
+            "token_usage": self.token_usage,
+            "context_dropped_chunk_ids": self.context_dropped_chunk_ids,
+            "analyzer": self.analyzer,
+            "compare_by": self.compare_by,
+            "groups": self.groups,
+            "embedding_latency_ms": self.embedding_latency_ms,
+            "deadline_budget_seconds": self.deadline_budget_seconds,
         }
 
 
@@ -120,9 +138,16 @@ class RagPipeline:
         analyzer: Optional[Analyzer] = None,
         context_builder: Optional[ContextBuilder] = None,
         output_guard: Optional[OutputGuard] = None,
+        token_counter: Optional[Any] = None,
+        max_context_tokens: int = config.MAX_CONTEXT_TOKENS,
+        answer_reasoning_effort: str = config.ANSWER_REASONING_EFFORT,
         deadline_budget_seconds: float = config.PIPELINE_TOTAL_DEADLINE_SECONDS,
         clock: Any = time.monotonic,
     ):
+        if answer_reasoning_effort not in config.ANSWER_REASONING_EFFORT_VALUES:
+            raise ValueError(
+                f"answer reasoning effort '{answer_reasoning_effort}' is not supported"
+            )
         self.knowledge_base = knowledge_base
         self.llm = llm
         self.embedder = embedder or E5Embedder()
@@ -132,8 +157,25 @@ class RagPipeline:
         self.analyzer = analyzer or Analyzer(llm)
         self.context_builder = context_builder or ContextBuilder()
         self.output_guard = output_guard or OutputGuard()
+        self.token_counter = token_counter or EstimatorTokenCounter()
+        self.max_context_tokens = int(max_context_tokens)
+        self.answer_reasoning_effort = answer_reasoning_effort
 
     # -- helpers -----------------------------------------------------------
+    @staticmethod
+    def _sum_usage(calls: List[Dict[str, Any]]) -> Dict[str, int]:
+        totals = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "reasoning_tokens": 0,
+            "total_tokens": 0,
+        }
+        for call in calls:
+            usage = call.get("usage") or {}
+            for key in totals:
+                totals[key] += int(usage.get(key, 0) or 0)
+        return totals
+
     @staticmethod
     def _retrieved_debug(chunks: List[RetrievedChunk]) -> List[Dict[str, Any]]:
         return [
@@ -152,7 +194,7 @@ class RagPipeline:
         question: str,
         mode: QueryMode,
         deadline: Optional[Deadline] = None,
-    ) -> str:
+    ):
         user_prompt = prompts.ANSWER_USER_TEMPLATE.format(
             context=context_text,
             hint=prompts.MODE_HINTS[mode.value],
@@ -163,7 +205,7 @@ class RagPipeline:
             user_prompt,
             temperature=config.LLM_TEMPERATURE_CHAT,
             max_tokens=config.LLM_MAX_OUTPUT_TOKENS,
-            reasoning_effort=config.LLM_REASONING_EFFORT_ANSWER,
+            reasoning_effort=self.answer_reasoning_effort,
             json_mode=False,
             deadline=deadline,
         )
@@ -193,6 +235,12 @@ class RagPipeline:
             "missing_report_ids": [],
             "used_fallback": False,
             "input_truncated": False,
+            "calls": [],
+            "context_dropped_chunk_ids": [],
+            "analyzer": {},
+            "compare_by": None,
+            "groups": [],
+            "embedding_latency_ms": 0.0,
         }
 
         def result(
@@ -214,6 +262,14 @@ class RagPipeline:
                 missing_report_ids=state["missing_report_ids"],
                 used_fallback=state["used_fallback"],
                 input_truncated=state["input_truncated"],
+                calls=list(state["calls"]),
+                token_usage=self._sum_usage(state["calls"]),
+                context_dropped_chunk_ids=list(state["context_dropped_chunk_ids"]),
+                analyzer=state["analyzer"],
+                compare_by=state["compare_by"],
+                groups=list(state["groups"]),
+                embedding_latency_ms=state["embedding_latency_ms"],
+                deadline_budget_seconds=self.deadline_budget_seconds,
             )
             logger.info(
                 "chat_request status=%s mode=%s route=%s chunks=%d latency_ms=%.1f "
@@ -288,6 +344,16 @@ class RagPipeline:
             state["mode"] = analysis.mode.value
             state["filters"] = analysis.filters
             state["used_fallback"] = analysis.used_fallback
+            state["calls"].append(
+                {
+                    "name": "analyzer",
+                    "latency_ms": analysis.latency_ms,
+                    "usage": analysis.usage,
+                    "attempts": 1,
+                    "used_fallback": analysis.used_fallback,
+                    "error_type": analysis.error_type,
+                }
+            )
 
             if not analysis.in_scope:
                 state["route"] = "out_of_scope"
@@ -315,6 +381,13 @@ class RagPipeline:
                 deadline=deadline,
             )
 
+        except LLMRateLimitError as exc:
+            logger.warning("chat_failed error_type=%s", type(exc).__name__)
+            return result(
+                AnswerStatus.RATE_LIMITED,
+                prompts.RATE_LIMITED_RESPONSE,
+                error_type=type(exc).__name__,
+            )
         except DeadlineExceeded as exc:
             logger.warning("chat_failed error_type=DeadlineExceeded")
             return result(
@@ -345,15 +418,20 @@ class RagPipeline:
         if catalog is not None:
             bundle = self.context_builder.build_catalog(catalog)
         else:
-            bundle = self.context_builder.build_chunks(chunks)
+            bundle, dropped = self.context_builder.build_chunks_within_budget(
+                chunks, self.token_counter, self.max_context_tokens
+            )
+            state["context_dropped_chunk_ids"] = dropped
 
         state["alias_map"] = bundle.alias_map
         state["retrieved"] = self._retrieved_debug(chunks)
         retrieved_ids = list(bundle.report_metadata)
 
-        answer_text = self._answer_with_llm(
+        completion = self._answer_with_llm(
             bundle.text, question, mode, deadline=deadline
         )
+        state["calls"].append(completion.to_metrics("answer"))
+        answer_text = completion.content
 
         def resolve(raw_answer: str):
             return process_citations(raw_answer, bundle.alias_map, retrieved_ids)
@@ -365,15 +443,17 @@ class RagPipeline:
                 f"{self._answer_user_prompt(bundle.text, question, mode)}"
                 f"\n\n{prompts.CITATION_RETRY_INSTRUCTION}"
             )
-            answer_text = self.llm.complete(
+            retry_completion = self.llm.complete(
                 prompts.SYSTEM_PROMPT,
                 retry_prompt,
                 temperature=config.LLM_TEMPERATURE_CHAT,
                 max_tokens=config.LLM_MAX_OUTPUT_TOKENS,
-                reasoning_effort=config.LLM_REASONING_EFFORT_ANSWER,
+                reasoning_effort=self.answer_reasoning_effort,
                 json_mode=False,
                 deadline=deadline,
             )
+            state["calls"].append(retry_completion.to_metrics("answer_retry"))
+            answer_text = retry_completion.content
             citations = resolve(answer_text)
 
         for key, value in citations.incidents.items():
