@@ -97,13 +97,32 @@ class IngestionPipeline:
 
             meta = reports_meta[report_id]
 
-            # Brief 5.2 #3: If competition_type = Lainnya, skip + warning
+            # Brief 5.2 #3: If competition_type = Lainnya, skip + warning.
+            # The row is kept defensively for production data that should not
+            # contain it; rag_status is deliberately left unchanged.
             if str(meta.competition_type).strip() == CompetitionType.LAINNYA.value:
                 reason = "competition_type = 'Lainnya' tidak pernah diproses ke RAG"
                 logger.warning("Report %s dilewati: %s", report_id, reason)
                 summary.skipped_count += 1
                 summary.skipped_reports.append({"report_id": report_id, "reason": reason})
                 continue
+
+            # Brief 5.2 #3: metadata enum and year validation.
+            metadata_ok, metadata_reason = self.validator.validate_metadata(
+                str(meta.competition_type),
+                str(meta.achievement_level),
+                meta.competition_year,
+            )
+            if not metadata_ok:
+                logger.error("Report %s failed: %s", report_id, metadata_reason)
+                self.sheets_repo.update_rag_status(report_id, RagStatus.PROSES_GAGAL)
+                summary.failed_count += 1
+                summary.failed_reports.append(
+                    {"report_id": report_id, "reason": metadata_reason}
+                )
+                continue
+
+            competition_year = int(meta.competition_year)
 
             # Brief 5.2 #2: Determine if processing is needed
             stored_source_file_id = self.chroma_store.get_source_file_id_for_report(report_id)
@@ -154,7 +173,9 @@ class IngestionPipeline:
 
             # Step 8: PII Scrubbing
             scrubbed_sections = {}
-            report_redactions = {"nim": 0, "phone": 0, "email": 0}
+            report_redactions = {
+                category: 0 for category in self.pii_scrubber.CATEGORIES
+            }
             for sec_name, text in sections.items():
                 s_text, counts = self.pii_scrubber.scrub(text)
                 scrubbed_sections[sec_name] = s_text
@@ -185,7 +206,7 @@ class IngestionPipeline:
                     chunks = self.chunker.chunk_section(
                         report_id=report_id,
                         competition_name=meta.competition_name,
-                        competition_year=meta.competition_year,
+                        competition_year=competition_year,
                         competition_type=str(meta.competition_type),
                         achievement_level=str(meta.achievement_level),
                         source_file_id=drive_file_id,
