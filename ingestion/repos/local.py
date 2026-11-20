@@ -110,32 +110,41 @@ class LocalDriveRepo(DriveRepo):
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     def download_pdf(self, file_id: str, destination_path: str) -> bool:
-        # Exact file matching per Supervisor feedback (Brief 5.1 & local repo specs)
-        # file_id in Google Drive maps to the stored filename or file_id in local storage
-        candidate = self.local_pdf_dir / file_id
-        if not candidate.exists() and not file_id.endswith(".pdf"):
-            candidate = self.local_pdf_dir / f"{file_id}.pdf"
+        """Copy an evaluation PDF from the local store.
 
-        # Check candidate exact existence
-        if candidate.is_file():
-            dest = Path(destination_path)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(candidate, dest)
+        Exact matching only: `file_id` must equal the stored filename exactly.
+        No implicit '.pdf' suffix is appended, so a wrong id fails loudly instead
+        of silently resolving to a similarly named file.
+        """
+        candidate = self.local_pdf_dir / file_id
+        if not candidate.is_file():
+            return False
+
+        dest = Path(destination_path)
+        if candidate.resolve() == dest.resolve():
             return True
-        return False
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(candidate, dest)
+        return True
 
     def upload_artifact(self, local_path: str, remote_filename: str) -> str:
         src = Path(local_path)
         dest = self.artifacts_dir / remote_filename
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(src, dest)
+        if src.resolve() != dest.resolve():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
         return dest.name
 
     def download_artifact(self, remote_filename: str, destination_path: str) -> bool:
         src = self.artifacts_dir / remote_filename
-        if src.exists():
-            dest = Path(destination_path)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src, dest)
+        if not src.is_file():
+            return False
+
+        dest = Path(destination_path)
+        if src.resolve() == dest.resolve():
             return True
-        return False
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dest)
+        return True

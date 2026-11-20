@@ -113,8 +113,8 @@ class IngestionPipeline:
                 summary.skipped_reports.append({"report_id": report_id, "reason": reason})
                 continue
 
-            # Step 4: Download PDF
-            local_pdf_path = self.temp_download_dir / f"{drive_file_id}.pdf"
+            # Step 4: Download PDF (local temp name keyed by report_id, not drive id)
+            local_pdf_path = self.temp_download_dir / f"{report_id}.pdf"
             download_ok = self.drive_repo.download_pdf(drive_file_id, str(local_pdf_path))
             if not download_ok:
                 reason = f"Gagal mengunduh file PDF dari Drive (file_id: {drive_file_id})"

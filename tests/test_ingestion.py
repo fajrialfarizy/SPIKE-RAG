@@ -130,9 +130,9 @@ def test_update_drive_file_id_replaces_old_chunks(test_env):
     old_count = len(old_chunks_r1["ids"])
 
     # Simulate admin updating drive_file_id for RPT0001
-    new_file_id = "DRV_RPT0001_UPDATED_V2"
-    # Create updated PDF file in repo
-    updated_pdf = drive_repo.local_pdf_dir / f"{new_file_id}.pdf"
+    new_file_id = "DRV_RPT0001_UPDATED_V2.pdf"
+    # Create updated PDF file in repo (name equals drive_file_id exactly)
+    updated_pdf = drive_repo.local_pdf_dir / new_file_id
     sample_pdf = drive_repo.local_pdf_dir / "DRV_RPT0001_NBPC.pdf"
     shutil.copyfile(sample_pdf, updated_pdf)
 

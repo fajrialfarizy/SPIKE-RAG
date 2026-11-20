@@ -1,52 +1,70 @@
 # Core RAG dependencies pinned for Python 3.12 (Lab Prestasi MVP)
-# Diverifikasi pada 20 November 2026
+#
+# Verification: every pin below was checked on 2026-11-20 against the PyPI JSON API
+# (https://pypi.org/pypi/<package>/json) for existence, latest release and
+# `requires_python` compatibility, and each pin was installed and imported locally.
+# Packages marked (not latest) are intentionally held at a working version; the
+# newest release at verification time is written next to them.
+#
+# Hosting compatibility note: Colab / Streamlit Community Cloud Linux+Python
+# compatibility of these exact pins is NOT VERIFIED (no Linux host available here).
 
 # Vector Store & Embedding Storage
-# Sumber: https://docs.trychroma.com / PyPI chromadb 1.5.9
+# Source: https://docs.trychroma.com ; PyPI chromadb
 chromadb==1.5.9
 
 # LLM Client (Groq API untuk openai/gpt-oss-20b)
-# Sumber: https://console.groq.com/docs / PyPI groq 1.7.0
+# Source: https://console.groq.com/docs ; PyPI groq
 groq==1.7.0
 
 # Web Application Framework
-# Sumber: https://docs.streamlit.io / PyPI streamlit 1.67.0
+# Source: https://docs.streamlit.io ; PyPI streamlit
 streamlit==1.67.0
 
 # PDF Text Extraction
-# Sumber: https://pymupdf.readthedocs.io / PyPI pymupdf 2.1
+# Source: https://pymupdf.readthedocs.io ; PyPI pymupdf
+# Public API is the `pymupdf` module; `fitz` is the legacy alias.
 pymupdf==2.1
 
 # Synthetic PDF Generator (Dummy Corpus)
-# Sumber: https://docs.reportlab.com / PyPI reportlab 5.1.0
+# Source: https://docs.reportlab.com ; PyPI reportlab
 reportlab==5.1.0
 
 # Data Validation & Serialization
-# Sumber: https://docs.pydantic.dev / PyPI pydantic 2.14.3
+# Source: https://docs.pydantic.dev ; PyPI pydantic (not latest: 2.14.4)
 pydantic==2.14.3
 
 # Google Sheets Client
-# Sumber: https://docs.gspread.org / PyPI gspread 6.1.4
+# Source: https://docs.gspread.org ; PyPI gspread (not latest: 6.2.1)
 gspread==6.1.4
 
 # Google APIs Client & Auth (Google Drive API)
-# Sumber: https://developers.google.com/drive/api / PyPI google-api-python-client 2.162.0
+# Source: https://developers.google.com/drive/api ; PyPI google-api-python-client
+# (not latest: 2.202.0)
 google-api-python-client==2.162.0
 google-auth==2.62.2
 google-auth-oauthlib==1.5.0
 
 # ML Embedding & Tokenizer Utilities
-# Sumber: https://huggingface.co/docs/transformers / PyPI transformers 5.14.1
+# Source: https://huggingface.co/docs/transformers ; PyPI transformers (not latest: 5.23.0)
 transformers==5.14.1
-# Sumber: https://sbert.net / PyPI sentence-transformers 6.3.0
+# Source: https://sbert.net ; PyPI sentence-transformers
 sentence-transformers==6.3.0
-# Sumber: https://onnxruntime.ai / PyPI onnxruntime 1.32.0
+# Tokenizer used for chunk token accounting (also a transformers dependency).
+# PyPI tokenizers (not latest: 0.23.3)
+tokenizers==0.22.2
+# Reserved for the documented ONNX alternative of the same model (Brief 5.4).
+# Not used by the current code path.
+# Source: https://onnxruntime.ai ; PyPI onnxruntime
 onnxruntime==1.32.0
+# PyPI numpy (not latest: 2.5.5)
+numpy==2.5.1
 
 # Testing Framework
-# Sumber: https://docs.pytest.org / PyPI pytest 9.2.0
+# Source: https://docs.pytest.org ; PyPI pytest
 pytest==9.2.0
 
 # Supporting image & http libraries
+# PyPI pillow (not latest: 13.0.0)
 pillow==12.3.0
 requests==2.34.2

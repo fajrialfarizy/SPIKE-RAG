@@ -126,7 +126,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.JUARA_1.value,
             "competition_type": CompetitionType.BUSINESS_PLAN.value,
-            "drive_file_id": "DRV_RPT0001_NBPC",
+            "drive_file_id": "DRV_RPT0001_NBPC.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "NutriTrack: Platform Personalisasi Nutrisi Berbasis AI untuk Lansia",
@@ -161,7 +161,7 @@ def generate_corpus():
             "competition_year": 2023,
             "achievement_level": AchievementLevel.FINALIS.value,
             "competition_type": CompetitionType.BUSINESS_PLAN.value,
-            "drive_file_id": "DRV_RPT0002_IBMN",
+            "drive_file_id": "DRV_RPT0002_IBMN.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "KopiSiklus: Pemanfaatan Limbah Ampas Kopi Menjadi Briket Ramah Lingkungan",
@@ -191,7 +191,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.JUARA_2.value,
             "competition_type": CompetitionType.BUSINESS_CASE.value,
-            "drive_file_id": "DRV_RPT0003_ACBC",
+            "drive_file_id": "DRV_RPT0003_ACBC.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "OmniGrowth: Strategi Ekspansi Omnichannel Retail FMCG di Era Pasca Pandemi",
@@ -223,7 +223,7 @@ def generate_corpus():
             "competition_year": 2023,
             "achievement_level": AchievementLevel.FINALIS.value,
             "competition_type": CompetitionType.BUSINESS_CASE.value,
-            "drive_file_id": "DRV_RPT0004_NFCC",
+            "drive_file_id": "DRV_RPT0004_NFCC.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "Pemberantasan Fraud Pinjaman Online Berbasis Graph Neural Network",
@@ -252,7 +252,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.JUARA_3.value,
             "competition_type": CompetitionType.ESSAY.value,
-            "drive_file_id": "DRV_RPT0005_LEKM",
+            "drive_file_id": "DRV_RPT0005_LEKM.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "Desentralisasi Lumbung Pangan Mandiri Menghadapi Ancaman El Nino",
@@ -281,7 +281,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.JUARA_HARAPAN.value,
             "competition_type": CompetitionType.KARYA_TULIS_ILMIAH.value,
-            "drive_file_id": "DRV_RPT0006_PINST",
+            "drive_file_id": "DRV_RPT0006_PINST.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "Sintesis Membran Bioplastik Kitosan-Pektin Kulit Kakao dengan Penguat Nanoclay",
@@ -310,7 +310,7 @@ def generate_corpus():
             "competition_year": 2023,
             "achievement_level": AchievementLevel.MOST_ASPIRING.value,
             "competition_type": CompetitionType.KARYA_TULIS_ILMIAH.value,
-            "drive_file_id": "DRV_RPT0007_SREH",
+            "drive_file_id": "DRV_RPT0007_SREH.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "Desain Microbial Fuel Cell Menggunakan Bakteri Sedimen Mangrove untuk Elektrifikasi Pesisir",
@@ -339,7 +339,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.JUARA_3.value,
             "competition_type": CompetitionType.BUSINESS_PLAN.value,
-            "drive_file_id": "DRV_RPT0008_AGRI",
+            "drive_file_id": "DRV_RPT0008_AGRI.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "SilaseSmart: Pakan Ternak Fermentasi Terstandar Berbasis IoT untuk Peternak Sapi Rakyat",
@@ -368,7 +368,7 @@ def generate_corpus():
             "competition_year": 2023,
             "achievement_level": AchievementLevel.FINALIS.value,
             "competition_type": CompetitionType.ESSAY.value,
-            "drive_file_id": "DRV_RPT0009_KPKP",
+            "drive_file_id": "DRV_RPT0009_KPKP.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "Integrasi Transportasi Publik Terakhir (Last-Mile) untuk Mengurangi Emisi Karbon Urban",
@@ -397,7 +397,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.JUARA_1.value,
             "competition_type": CompetitionType.BUSINESS_CASE.value,
-            "drive_file_id": "DRV_RPT0010_GSCC",
+            "drive_file_id": "DRV_RPT0010_GSCC.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "Revolusi Rantai Pasok Dingin (Cold Chain) Agribisnis Berbasis AI Predictive Routing",
@@ -432,7 +432,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.FINALIS.value,
             "competition_type": CompetitionType.BUSINESS_PLAN.value,
-            "drive_file_id": "DRV_RPT0011_SCAN",
+            "drive_file_id": "DRV_RPT0011_SCAN.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "is_scanned": True,
             "sections": {},
@@ -444,7 +444,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.FINALIS.value,
             "competition_type": CompetitionType.ESSAY.value,
-            "drive_file_id": "DRV_RPT0012_MISSING_SEC",
+            "drive_file_id": "DRV_RPT0012_MISSING_SEC.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "Pengurangan Sampah Plastik Sekali Pakai di Kafetaria Kampus",
@@ -460,7 +460,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.JUARA_2.value,
             "competition_type": CompetitionType.KARYA_TULIS_ILMIAH.value,
-            "drive_file_id": "DRV_RPT0013_OVER_CHAR",
+            "drive_file_id": "DRV_RPT0013_OVER_CHAR.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "Penerapan Sensor LoRaWAN untuk Pemantauan Kualitas Air Danau Kampus",
@@ -480,7 +480,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.FINALIS.value,
             "competition_type": CompetitionType.BUSINESS_CASE.value,
-            "drive_file_id": "DRV_RPT0014_INJECTION",
+            "drive_file_id": "DRV_RPT0014_INJECTION.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "Audit Keamanan Sistem Informasi Cloud Lembaga Keuangan",
@@ -502,7 +502,7 @@ def generate_corpus():
             "competition_year": 2024,
             "achievement_level": AchievementLevel.JUARA_1.value,
             "competition_type": CompetitionType.KARYA_TULIS_ILMIAH.value,
-            "drive_file_id": "DRV_RPT0015_PII",
+            "drive_file_id": "DRV_RPT0015_PII.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
             "sections": {
                 "judul_ide": "Sistem Deteksi Kantuk Pengemudi Berbasis Sinyal EEG",
@@ -610,13 +610,14 @@ def generate_corpus():
         # Entri uji tipe Lainnya di report_documents
         writer.writerow({
             "report_id": extra_lainnya_report["report_id"],
-            "drive_file_id": "DRV_RPT0099_LAINNYA",
+            "drive_file_id": "DRV_RPT0099_LAINNYA.pdf",
             "rag_status": RagStatus.BELUM_DIPROSES.value,
         })
 
     # Generate PDF documents in data/dummy_pdfs/
+    # The file name equals drive_file_id exactly (local repo performs exact matching).
     for item in reports_data:
-        pdf_path = DUMMY_PDF_DIR / f"{item['drive_file_id']}.pdf"
+        pdf_path = DUMMY_PDF_DIR / item["drive_file_id"]
         generate_pdf(
             file_path=pdf_path,
             sections=item.get("sections", {}),

@@ -110,12 +110,20 @@ def test_local_drive_repo_operations(temp_fixtures):
     sample_pdf = pdf_dir / "DRV_0001.pdf"
     sample_pdf.write_text("Dummy PDF content", encoding="utf-8")
 
-    # Download PDF
+    # Exact matching only: the bare id must NOT resolve to 'DRV_0001.pdf'
+    assert drive_repo.download_pdf("DRV_0001", str(artifacts_dir / "nope.pdf")) is False
+    assert not (artifacts_dir / "nope.pdf").exists()
+
+    # Download PDF by exact file name
     dest_path = artifacts_dir / "downloaded.pdf"
-    ok = drive_repo.download_pdf("DRV_0001", str(dest_path))
+    ok = drive_repo.download_pdf("DRV_0001.pdf", str(dest_path))
     assert ok is True
     assert dest_path.exists()
     assert dest_path.read_text(encoding="utf-8") == "Dummy PDF content"
+
+    # Uploading into the directory that already holds the source must not raise
+    same_name = drive_repo.upload_artifact(str(dest_path), "downloaded.pdf")
+    assert same_name == "downloaded.pdf"
 
     # Upload artifact
     artifact_name = drive_repo.upload_artifact(str(dest_path), "chroma_backup.zip")
