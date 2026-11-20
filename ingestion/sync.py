@@ -16,6 +16,10 @@ from ingestion.chroma_store import ChromaStore
 from ingestion.repos.base import DriveRepo
 
 
+class ManifestError(RuntimeError):
+    """Raised when a manifest is unusable or was produced by a different model."""
+
+
 class ChromaSync:
     """Handles zipping, manifest creation, and Drive synchronization."""
 
@@ -60,6 +64,32 @@ class ChromaSync:
             "zip_checksum": zip_checksum,
         }
         return manifest
+
+    @staticmethod
+    def validate_manifest(
+        manifest: Dict[str, Any],
+        expected_model: str = config.EMBEDDING_MODEL_NAME,
+    ) -> None:
+        """
+        Refuse a manifest produced by another embedding model (Brief 5.4).
+        The application calls this at startup before loading the collection.
+        """
+        if not isinstance(manifest, dict):
+            raise ManifestError("Manifest is not a JSON object")
+
+        model = manifest.get("embedding_model")
+        if model != expected_model:
+            raise ManifestError(
+                f"Manifest was built with embedding model '{model}' but config "
+                f"expects '{expected_model}'. Refusing to load the knowledge base."
+            )
+
+        schema_version = manifest.get("schema_version")
+        if schema_version != config.MANIFEST_SCHEMA_VERSION:
+            raise ManifestError(
+                f"Manifest schema_version '{schema_version}' is not supported "
+                f"(expected '{config.MANIFEST_SCHEMA_VERSION}')"
+            )
 
     def sync_to_drive(self, zip_path: Path, manifest_path: Path) -> Dict[str, Any]:
         """
