@@ -372,6 +372,32 @@ PATTERN_ANALYZER_MONEY_SUFFIX = re.compile(
     r"(?i)^\s*(?:juta|ribu|miliar|milyar|jt|rb|million)\b"
 )
 
+# Comparison grouping (fix pack F3). The analyzer may ask for a balanced
+# comparison; retrieval then runs one sub-retrieval per group and merges them.
+COMPARE_BY_OPTIONS = ("achievement_group", "competition_type")
+COMPARISON_AWARD_LEVELS = (
+    "Juara 1",
+    "Juara 2",
+    "Juara 3",
+    "Juara Harapan",
+    "Most Aspiring dan penghargaan serupa",
+)
+COMPARISON_GROUPS = {
+    "achievement_group": (
+        {"label": "juara", "filter": {"achievement_level": COMPARISON_AWARD_LEVELS}},
+        {"label": "belum juara", "filter": {"achievement_level": ("Finalis",)}},
+    ),
+    "competition_type": (
+        {"label": "Business Plan", "filter": {"competition_type": ("Business Plan",)}},
+        {"label": "Business Case", "filter": {"competition_type": ("Business Case",)}},
+        {"label": "Essay", "filter": {"competition_type": ("Essay",)}},
+        {
+            "label": "Karya Tulis Ilmiah",
+            "filter": {"competition_type": ("Karya Tulis Ilmiah",)},
+        },
+    ),
+}
+
 # Retrieval limits per mode: k chunks returned, max chunks per report.
 RETRIEVAL_LIMITS = {
     "specific": {

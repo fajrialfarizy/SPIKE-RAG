@@ -194,11 +194,10 @@ class RagPipeline:
         question: str,
         mode: QueryMode,
         deadline: Optional[Deadline] = None,
+        hint_extra: str = "",
     ):
-        user_prompt = prompts.ANSWER_USER_TEMPLATE.format(
-            context=context_text,
-            hint=prompts.MODE_HINTS[mode.value],
-            question=question,
+        user_prompt = self._answer_user_prompt(
+            context_text, question, mode, hint_extra=hint_extra
         )
         return self.llm.complete(
             prompts.SYSTEM_PROMPT,
@@ -211,11 +210,18 @@ class RagPipeline:
         )
 
     def _answer_user_prompt(
-        self, context_text: str, question: str, mode: QueryMode
+        self,
+        context_text: str,
+        question: str,
+        mode: QueryMode,
+        hint_extra: str = "",
     ) -> str:
+        hint = prompts.MODE_HINTS[mode.value]
+        if hint_extra:
+            hint = f"{hint}\n\n{hint_extra}"
         return prompts.ANSWER_USER_TEMPLATE.format(
             context=context_text,
-            hint=prompts.MODE_HINTS[mode.value],
+            hint=hint,
             question=question,
         )
 
@@ -382,15 +388,34 @@ class RagPipeline:
                     deadline=deadline,
                 )
 
-            state["route"] = "semantic"
-            chunks = self.retriever.retrieve(
-                analysis.search_query, analysis.mode, analysis.filters
-            )
+            state["route"] = "semantic_grouped" if analysis.compare_by else "semantic"
+            hint_extra = ""
+            if analysis.compare_by:
+                state["compare_by"] = analysis.compare_by
+                chunks, groups = self.retriever.retrieve_grouped(
+                    analysis.search_query,
+                    analysis.mode,
+                    analysis.filters,
+                    analysis.compare_by,
+                )
+                state["groups"] = groups
+                hint_extra = prompts.build_group_hint(groups)
+                logger.info(
+                    "chat_compare_by grouping=%s groups=%d chunks=%d",
+                    analysis.compare_by,
+                    len(groups),
+                    len(chunks),
+                )
+            else:
+                chunks = self.retriever.retrieve(
+                    analysis.search_query, analysis.mode, analysis.filters
+                )
+
             if not chunks:
                 return result(AnswerStatus.NOT_FOUND, prompts.NOT_FOUND_RESPONSE)
             return self._compose_answer(
                 result, state, chunks, text, analysis.mode, catalog=None,
-                deadline=deadline,
+                deadline=deadline, hint_extra=hint_extra,
             )
 
         except LLMRateLimitError as exc:
@@ -426,6 +451,7 @@ class RagPipeline:
         mode: QueryMode,
         catalog: Optional[List[Dict[str, Any]]],
         deadline: Optional[Deadline] = None,
+        hint_extra: str = "",
     ) -> RagResult:
         if catalog is not None:
             bundle = self.context_builder.build_catalog(catalog)
@@ -440,7 +466,7 @@ class RagPipeline:
         retrieved_ids = list(bundle.report_metadata)
 
         completion = self._answer_with_llm(
-            bundle.text, question, mode, deadline=deadline
+            bundle.text, question, mode, deadline=deadline, hint_extra=hint_extra
         )
         state["calls"].append(completion.to_metrics("answer"))
         answer_text = completion.content
@@ -452,7 +478,7 @@ class RagPipeline:
         if not citations.cited_report_ids:
             # One stricter attempt before giving up (Brief 5.6).
             retry_prompt = (
-                f"{self._answer_user_prompt(bundle.text, question, mode)}"
+                f"{self._answer_user_prompt(bundle.text, question, mode, hint_extra=hint_extra)}"
                 f"\n\n{prompts.CITATION_RETRY_INSTRUCTION}"
             )
             retry_completion = self.llm.complete(

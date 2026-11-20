@@ -46,6 +46,23 @@ class RetrievedChunk:
     score: Optional[float] = None
 
 
+def merge_filter_dicts(
+    base: Optional[Dict[str, Sequence[Any]]],
+    extra: Optional[Dict[str, Sequence[Any]]],
+) -> Dict[str, List[Any]]:
+    """Combine two filter sets; a field in both keeps only the intersection."""
+    merged: Dict[str, List[Any]] = {
+        field: list(values) for field, values in (base or {}).items() if values
+    }
+    for field, values in (extra or {}).items():
+        incoming = list(values or [])
+        if field in merged:
+            merged[field] = [value for value in merged[field] if value in incoming]
+        else:
+            merged[field] = incoming
+    return merged
+
+
 def build_where_filter(
     filters: Optional[Dict[str, Sequence[Any]]],
 ) -> Optional[Dict[str, Any]]:
@@ -136,8 +153,21 @@ class Retriever:
         if total == 0:
             return []
 
-        where = build_where_filter(filters)
         query_embedding = self.embedder.embed_query(search_query)
+        return self._query_chunks(
+            query_embedding, build_where_filter(filters), k, max_per_report, total
+        )
+
+    def _query_chunks(
+        self,
+        query_embedding: Sequence[float],
+        where: Optional[Dict[str, Any]],
+        k: int,
+        max_per_report: int,
+        total: int,
+    ) -> List[RetrievedChunk]:
+        if k <= 0 or total == 0:
+            return []
 
         candidate_count = min(k * config.RETRIEVAL_CANDIDATE_MULTIPLIER, total)
         matches: List[ChunkMatch] = self.knowledge_base.query(
@@ -162,6 +192,68 @@ class Retriever:
             )
 
         return self._select_with_cap(candidates, k, max_per_report)
+
+    def retrieve_grouped(
+        self,
+        search_query: str,
+        mode: QueryMode,
+        filters: Optional[Dict[str, Sequence[Any]]],
+        compare_by: str,
+    ) -> tuple[List[RetrievedChunk], List[Dict[str, Any]]]:
+        """
+        One sub-retrieval per comparison group, k split across the groups.
+
+        A group whose own filter contradicts the analyzer filters (an empty
+        intersection) matches nothing, and the returned status says so instead of
+        silently dropping the constraint. Results are deduplicated by chunk id.
+        """
+        if mode is not QueryMode.CROSS_REPORT:
+            raise RetrievalError(
+                f"compare_by is only supported for cross_report, not '{mode}'."
+            )
+        if compare_by not in config.COMPARISON_GROUPS:
+            raise RetrievalError(f"Unknown comparison grouping '{compare_by}'.")
+
+        groups = config.COMPARISON_GROUPS[compare_by]
+        limits = config.RETRIEVAL_LIMITS[mode.value]
+        total_k = int(limits["k"])
+        max_per_report = int(limits["max_per_report"])
+
+        total = self.knowledge_base.count_chunks()
+        if total == 0:
+            return [], []
+
+        base, extra = divmod(total_k, len(groups))
+        query_embedding = self.embedder.embed_query(search_query)
+
+        merged: List[RetrievedChunk] = []
+        seen: set = set()
+        status: List[Dict[str, Any]] = []
+
+        for index, group in enumerate(groups):
+            group_k = base + (1 if index < extra else 0)
+            group_filters = merge_filter_dicts(filters, group.get("filter"))
+
+            if any(not values for values in group_filters.values()):
+                status.append({"label": group["label"], "count": 0})
+                continue
+
+            chunks = self._query_chunks(
+                query_embedding,
+                build_where_filter(group_filters),
+                group_k,
+                max_per_report,
+                total,
+            )
+            status.append({"label": group["label"], "count": len(chunks)})
+
+            for chunk in chunks:
+                if chunk.chunk_id in seen:
+                    continue
+                seen.add(chunk.chunk_id)
+                merged.append(chunk)
+
+        return merged, status
 
     # -- exact ID route ----------------------------------------------------
     def retrieve_by_report_ids(self, report_ids: Sequence[str]) -> List[RetrievedChunk]:

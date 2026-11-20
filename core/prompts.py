@@ -169,7 +169,8 @@ Kembalikan JSON dengan bentuk persis:
     "competition_type": [],
     "competition_year": [],
     "achievement_level": []
-  }
+  },
+  "compare_by": null
 }
 
 Aturan penilaian:
@@ -191,7 +192,12 @@ Aturan penilaian:
    competition_type, walaupun pertanyaannya menyebut "juara", "belum juara", atau
    nama jenis kompetisi. Isi filters hanya untuk pertanyaan yang meminta pengalaman,
    kendala, atau rekomendasi pada satu batasan tertentu.
-6. Jangan pernah menambahkan kunci lain.
+6. compare_by hanya boleh bernilai null, "achievement_group", atau
+   "competition_type", dan hanya untuk mode "cross_report". Gunakan
+   "achievement_group" untuk perbandingan juara dengan belum juara, dan
+   "competition_type" untuk perbandingan antarjenis kompetisi. Untuk pertanyaan
+   lain, biarkan null.
+7. Jangan pernah menambahkan kunci lain.
 
 Contoh:
 
@@ -208,10 +214,10 @@ Pertanyaan: "Apa rekomendasi untuk tim yang belum juara pada business plan?"
 Jawaban: {"in_scope": true, "mode": "specific", "search_query": "rekomendasi tim finalis business plan", "filters": {"competition_type": ["Business Plan"], "competition_year": [], "achievement_level": ["Finalis"]}}
 
 Pertanyaan: "Bandingkan pembelajaran tim yang juara dan yang belum juara."
-Jawaban: {"in_scope": true, "mode": "cross_report", "search_query": "perbandingan pembelajaran tim juara dan finalis", "filters": {"competition_type": [], "competition_year": [], "achievement_level": []}}
+Jawaban: {"in_scope": true, "mode": "cross_report", "search_query": "perbandingan pembelajaran tim juara dan finalis", "filters": {"competition_type": [], "competition_year": [], "achievement_level": []}, "compare_by": "achievement_group"}
 
 Pertanyaan: "Bandingkan pengalaman tim pada business plan dan business case."
-Jawaban: {"in_scope": true, "mode": "cross_report", "search_query": "perbandingan pengalaman business plan dan business case", "filters": {"competition_type": [], "competition_year": [], "achievement_level": []}}
+Jawaban: {"in_scope": true, "mode": "cross_report", "search_query": "perbandingan pengalaman business plan dan business case", "filters": {"competition_type": [], "competition_year": [], "achievement_level": []}, "compare_by": "competition_type"}
 
 Pertanyaan: "Apa saja laporan kompetisi yang tersedia?"
 Jawaban: {"in_scope": true, "mode": "catalog", "search_query": "daftar laporan kompetisi tersedia", "filters": {"competition_type": [], "competition_year": [], "achievement_level": []}}
@@ -238,6 +244,30 @@ MODE_HINTS: Dict[str, str] = {
         "daftar_laporan yang diberikan; jangan menambah laporan di luar daftar."
     ),
 }
+
+GROUP_HINT_HEADER = "Kelompok pembanding yang dipakai:"
+GROUP_HINT_LINE = "- {label}: {count} potongan dokumen yang relevan."
+GROUP_HINT_EMPTY = (
+    "- {label}: tidak ada dokumen yang cocok. Sebutkan secara eksplisit dalam "
+    "jawaban bahwa kelompok ini tidak memiliki data."
+)
+
+
+def build_group_hint(groups: "list") -> str:
+    """Mode hint fragment that states which comparison groups were represented."""
+    if not groups:
+        return ""
+    lines = [GROUP_HINT_HEADER]
+    for group in groups:
+        count = int(group.get("count") or 0)
+        if count <= 0:
+            lines.append(GROUP_HINT_EMPTY.format(label=group.get("label")))
+        else:
+            lines.append(
+                GROUP_HINT_LINE.format(label=group.get("label"), count=count)
+            )
+    return "\n".join(lines)
+
 
 ANSWER_USER_TEMPLATE = """Konteks dokumen evaluasi kompetisi dari sistem:
 

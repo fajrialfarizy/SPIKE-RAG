@@ -66,6 +66,7 @@ class AnalyzerResult:
     filters_before_validation: Dict[str, Any] = field(default_factory=dict)
     dropped_reasons: List[str] = field(default_factory=list)
     deterministic_filters: Dict[str, List[Any]] = field(default_factory=dict)
+    compare_by: Optional[str] = None
 
 
 def parse_analyzer_output(raw: str) -> Dict[str, Any]:
@@ -305,6 +306,17 @@ def validate_analysis(
         search_query = " ".join(question.split())
     search_query = search_query[: config.ANALYZER_MAX_SEARCH_QUERY_CHARS].strip()
 
+    compare_by_raw = payload.get("compare_by")
+    compare_by: Optional[str] = None
+    if compare_by_raw not in (None, "", "null", "None"):
+        candidate = _normalize_key(compare_by_raw).replace(" ", "_")
+        if candidate not in config.COMPARE_BY_OPTIONS:
+            dropped.append(f"compare_by:unknown:{candidate}")
+        elif mode is not QueryMode.CROSS_REPORT:
+            dropped.append(f"compare_by:not_cross_report:{candidate}")
+        else:
+            compare_by = candidate
+
     filters_raw = payload.get("filters")
     filters: Dict[str, List[Any]] = {}
     if isinstance(filters_raw, dict):
@@ -337,6 +349,7 @@ def validate_analysis(
         filters_before_validation=dict(filters_raw) if isinstance(filters_raw, dict) else {},
         dropped_reasons=dropped,
         deterministic_filters=deterministic,
+        compare_by=compare_by,
     )
 
 

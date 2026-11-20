@@ -113,6 +113,51 @@ class FakeKnowledgeBase:
         return self.metadatas[:limit]
 
 
+def _matches_where(metadata: Dict[str, Any], where: Optional[Dict[str, Any]]) -> bool:
+    """Evaluate the subset of Chroma's where syntax the retriever emits."""
+    if not where:
+        return True
+    if "$and" in where:
+        return all(_matches_where(metadata, clause) for clause in where["$and"])
+
+    for field, condition in where.items():
+        if not isinstance(condition, dict) or "$in" not in condition:
+            raise AssertionError(f"Unsupported where clause: {condition!r}")
+        value = metadata.get(field)
+        allowed = list(condition["$in"])
+        if field == "competition_year":
+            value = None if value is None else int(value)
+            allowed = [int(item) for item in allowed]
+        if value not in allowed:
+            return False
+    return True
+
+
+class FilteringKnowledgeBase(FakeKnowledgeBase):
+    """Fake knowledge base that actually applies the where clause."""
+
+    def query(self, query_embedding, where=None, n_results=1):
+        self.query_calls.append(
+            {
+                "query_embedding": list(query_embedding),
+                "where": where,
+                "n_results": n_results,
+            }
+        )
+        matching = [
+            match for match in self.matches if _matches_where(match.metadata, where)
+        ]
+        return matching[:n_results]
+
+    def list_report_metadatas(self, where=None, limit=config.RETRIEVAL_CATALOG_FETCH_LIMIT):
+        self.metadata_calls.append({"where": where, "limit": limit})
+        return [
+            metadata
+            for metadata in self.metadatas
+            if _matches_where(metadata, where)
+        ][:limit]
+
+
 class FakeLLM(LLMClient):
     """
     Scripted LLM double used by every offline test.
