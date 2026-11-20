@@ -13,6 +13,7 @@ Guarantees:
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -106,6 +107,16 @@ class Retriever:
         self.knowledge_base = knowledge_base
         self.embedder = embedder or E5Embedder()
         self.similarity_threshold = similarity_threshold
+        # Latency of the last query embedding, for the debug object and smoke run.
+        self.last_embedding_latency_ms = 0.0
+
+    def _embed_query(self, search_query: str) -> Sequence[float]:
+        started = time.perf_counter()
+        embedding = self.embedder.embed_query(search_query)
+        self.last_embedding_latency_ms = round(
+            (time.perf_counter() - started) * 1000.0, 1
+        )
+        return embedding
 
     # -- semantic modes ----------------------------------------------------
     def _select_with_cap(
@@ -153,7 +164,7 @@ class Retriever:
         if total == 0:
             return []
 
-        query_embedding = self.embedder.embed_query(search_query)
+        query_embedding = self._embed_query(search_query)
         return self._query_chunks(
             query_embedding, build_where_filter(filters), k, max_per_report, total
         )
@@ -224,7 +235,7 @@ class Retriever:
             return [], []
 
         base, extra = divmod(total_k, len(groups))
-        query_embedding = self.embedder.embed_query(search_query)
+        query_embedding = self._embed_query(search_query)
 
         merged: List[RetrievedChunk] = []
         seen: set = set()
