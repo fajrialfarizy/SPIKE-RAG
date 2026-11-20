@@ -1,0 +1,55 @@
+# Python environment
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# ChromaDB vector store
+chroma_db/
+*.chroma
+
+# Raw & generated PDFs and evaluation files
+data/dummy_pdfs/
+data/*.pdf
+
+# Logs & temporary run summaries
+logs/
+*.log
+
+# Pytest / Cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS / Editor specific files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
