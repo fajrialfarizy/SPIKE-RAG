@@ -106,25 +106,52 @@ PATTERN_PII_EMAIL = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+"
 
 PII_REDACTION_REPLACEMENT = "[DIREDAKSI]"
 
-# Section Heading Regex Patterns (tolerant to numbering, capitalization, whitespace)
-SECTION_PATTERNS = {
-    "judul_ide": re.compile(
-        r"^(?:[0-9]+[\.\)\-]?\s*)?Judul\s+Ide\s*:?",
-        re.IGNORECASE | re.MULTILINE
+# Section heading detection (Brief 5.2 #6)
+# Tolerant to numbering (arabic or roman), ``1.``/``2)``/``III -`` styles, mixed case,
+# extra whitespace and an optional trailing colon or dash.
+SECTION_HEADING_LABELS = {
+    "judul_ide": ("Judul Ide",),
+    "executive_summary": (
+        "Executive Summary / Abstrak",
+        "Executive Summary",
+        "Abstrak",
     ),
-    "executive_summary": re.compile(
-        r"^(?:[0-9]+[\.\)\-]?\s*)?(?:Executive\s+Summary|Abstrak)\s*:?",
-        re.IGNORECASE | re.MULTILINE
-    ),
-    "evaluasi_tim": re.compile(
-        r"^(?:[0-9]+[\.\)\-]?\s*)?Evaluasi\s+Tim\s*:?",
-        re.IGNORECASE | re.MULTILINE
-    ),
-    "saran_pengembangan": re.compile(
-        r"^(?:[0-9]+[\.\)\-]?\s*)?Saran\s+Pengembangan\s*:?",
-        re.IGNORECASE | re.MULTILINE
-    ),
+    "evaluasi_tim": ("Evaluasi Tim",),
+    "saran_pengembangan": ("Saran Pengembangan",),
 }
+
+# Optional numbering prefix: "1.", "2)", "3 -", "IV.", "III -"
+PATTERN_SECTION_NUMBER_PREFIX = (
+    r"(?:(?:\d{1,2}|[IVXLC]{1,6})\s*[\.\)\-\u2013\u2014:]\s*)?"
+)
+
+
+def _build_heading_pattern(labels: tuple) -> "re.Pattern[str]":
+    alternatives = "|".join(
+        r"\s+".join(re.escape(part) for part in label.split()) for label in labels
+    )
+    return re.compile(
+        rf"^[ \t]*{PATTERN_SECTION_NUMBER_PREFIX}(?:{alternatives})[ \t]*[:\-\u2013\u2014]?[ \t]*",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+
+SECTION_PATTERNS = {
+    name: _build_heading_pattern(labels)
+    for name, labels in SECTION_HEADING_LABELS.items()
+}
+
+# Page numbers and running headers/footers (Brief 5.2 #4)
+PATTERN_PAGE_NUMBER = re.compile(
+    r"^[ \t]*(?:Halaman|Page|Hal\.?)[ \t]*[-\u2013\u2014]?[ \t]*\d{1,3}"
+    r"(?:[ \t]*(?:dari|of|/)[ \t]*\d{1,3})?[ \t]*[-\u2013\u2014]?[ \t]*$"
+    r"|^[ \t]*[-\u2013\u2014]?[ \t]*\d{1,3}[ \t]*[-\u2013\u2014]?[ \t]*$",
+    re.MULTILINE,
+)
+# Lines in the first/last N lines of a page that repeat on most pages are margins.
+REPEATED_MARGIN_LINES = 3
+REPEATED_MARGIN_RATIO = 0.6
+REPEATED_MARGIN_MIN_PAGES = 2
 
 # Authentication Settings
 AUTH_MAX_FAILED_ATTEMPTS = 5
