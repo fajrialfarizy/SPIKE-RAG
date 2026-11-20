@@ -94,7 +94,6 @@ class ChromaStore:
         self,
         chunks: List[DocumentChunk],
         embeddings: List[List[float]],
-        simulate_failure: bool = False,
     ) -> None:
         """
         Store chunks for one report: delete existing chunks, then insert.
@@ -130,15 +129,6 @@ class ChromaStore:
         self.delete_chunks_for_report(report_id)
 
         try:
-            if simulate_failure:
-                self._add(
-                    ids=ids[:1],
-                    documents=[chunk.document_text for chunk in chunks[:1]],
-                    metadatas=[chunk.metadata for chunk in chunks[:1]],
-                    embeddings=embeddings[:1],
-                )
-                raise RuntimeError("Simulated storage failure mid-write")
-
             self._add(
                 ids=ids,
                 documents=[chunk.document_text for chunk in chunks],

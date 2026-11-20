@@ -1,37 +1,47 @@
 """
-Unit and integration tests for Ingestion Pipeline (Fase 1 Acceptance).
-Covers:
-- First run: valid reports -> Selesai; defects -> Proses gagal with log reasons; Lainnya skipped.
-- Second run without changes: no reprocessing, chunk count identical.
-- Updating drive_file_id replaces old chunks cleanly without duplicates.
-- Simulated mid-storage failure cleanly deletes partial chunks and sets status Proses gagal.
-- Assertion that no chunk exceeds 512 tokens.
-- Exactly 8 metadata fields.
-- Zero PII leaks remaining in ChromaDB.
-- Manifest generation and artifact zip restoration.
-- Heading tolerance test with various formatting styles.
+Ingestion pipeline acceptance tests (Phase 1).
+
+Fully offline: the chunker gets an injected word-count tokenizer and the pipeline
+an explicit hash embedder, so no model weights are loaded. Embedding-model
+identity is still enforced by the ChromaStore guard against config.
 """
 
-import pytest
+import json
 import shutil
 from pathlib import Path
 
-from enums import CompetitionType, AchievementLevel, SectionType, RagStatus
+import pytest
+
 import config
-from ingestion.repos.local import LocalSheetsRepo, LocalDriveRepo
+from enums import RagStatus
 from ingestion.chroma_store import ChromaStore
+from ingestion.chunker import SectionAwareChunker
 from ingestion.pipeline import IngestionPipeline
-from ingestion.pdf_parser import PDFParser
+from ingestion.repos.local import LocalDriveRepo, LocalSheetsRepo
 from ingestion.sync import ChromaSync
 from scripts.make_dummy_corpus import generate_corpus
+from tests.stubs import HashEmbedder, WordCountTokenizer
+
+FORBIDDEN_PII = (
+    "13520099",
+    "081234567890",
+    "+6281198765432",
+    "budi.santoso2024@gmail.com",
+    "hendra@institusi.ac.id",
+    "Budi Santoso",
+    "Ahmad Fauzi",
+    "Hendra",
+)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def corpus():
+    """Generate the dummy corpus once per module (deterministic, ~2s)."""
+    generate_corpus()
 
 
 @pytest.fixture
-def test_env(tmp_path):
-    """Sets up a clean temporary workspace for ingestion pipeline tests."""
-    generate_corpus()
-
-    # Copy fixtures to temp
+def env(tmp_path):
     reports_csv = tmp_path / "competition_reports.csv"
     docs_csv = tmp_path / "report_documents.csv"
     shutil.copyfile(config.FIXTURES_DIR / "competition_reports.csv", reports_csv)
@@ -40,187 +50,319 @@ def test_env(tmp_path):
     pdf_dir = tmp_path / "dummy_pdfs"
     shutil.copytree(config.DUMMY_PDF_DIR, pdf_dir)
 
-    artifacts_dir = tmp_path / "artifacts"
-    artifacts_dir.mkdir()
-
-    chroma_dir = tmp_path / "chroma_db"
-    chroma_dir.mkdir()
-
-    sheets_repo = LocalSheetsRepo(reports_csv, docs_csv)
-    drive_repo = LocalDriveRepo(pdf_dir, artifacts_dir)
-    chroma_store = ChromaStore(persist_dir=chroma_dir)
+    sheets = LocalSheetsRepo(reports_csv, docs_csv)
+    drive = LocalDriveRepo(pdf_dir, tmp_path / "artifacts")
+    store = ChromaStore(persist_dir=tmp_path / "chroma_db")
 
     pipeline = IngestionPipeline(
-        sheets_repo=sheets_repo,
-        drive_repo=drive_repo,
-        chroma_store=chroma_store,
+        sheets_repo=sheets,
+        drive_repo=drive,
+        chroma_store=store,
+        embedder=HashEmbedder(),
+        chunker=SectionAwareChunker(tokenizer=WordCountTokenizer()),
         temp_download_dir=tmp_path / "temp_downloads",
+        log_dir=tmp_path / "logs",
     )
+    return pipeline, sheets, drive, store, tmp_path
 
-    return pipeline, sheets_repo, drive_repo, chroma_store, tmp_path
+
+def statuses(sheets):
+    return {row.report_id: row.rag_status for row in sheets.get_report_documents()}
 
 
-def test_first_run_ingestion_and_edge_cases(test_env):
-    pipeline, sheets_repo, drive_repo, chroma_store, tmp_path = test_env
+def test_first_run_marks_valid_defective_and_skipped(env):
+    pipeline, sheets, _, store, _ = env
+
+    summary = pipeline.run()
+    state = statuses(sheets)
+
+    for report_id in [f"RPT{i:04d}" for i in range(1, 11)]:
+        assert state[report_id] == RagStatus.SELESAI, report_id
+
+    # Char-limit and PII documents are valid; injection document is stored as data.
+    assert state["RPT0013"] == RagStatus.SELESAI
+    assert state["RPT0015"] == RagStatus.SELESAI
+    assert state["RPT0014"] == RagStatus.SELESAI
+
+    assert state["RPT0011"] == RagStatus.PROSES_GAGAL
+    assert state["RPT0012"] == RagStatus.PROSES_GAGAL
+
+    # Lainnya row is skipped and its status is left untouched.
+    assert state["RPT0099"] == RagStatus.BELUM_DIPROSES
+
+    assert summary.processed_count == 13
+    assert summary.skipped_count == 1
+    assert summary.failed_count == 2
+    assert [r["report_id"] for r in summary.skipped_reports] == ["RPT0099"]
+    assert {r["report_id"] for r in summary.failed_reports} == {"RPT0011", "RPT0012"}
+
+    reasons = {r["report_id"]: r["reason"] for r in summary.failed_reports}
+    assert "scan" in reasons["RPT0011"].lower()
+    assert "saran_pengembangan" in reasons["RPT0012"]
+
+    # A failed document does not stop the batch: later reports are processed.
+    assert "RPT0013" in summary.processed_reports
+    assert "RPT0015" in summary.processed_reports
+    assert store.count_chunks() > 0
+
+
+def test_chunk_limits_and_metadata_shape(env):
+    pipeline, _, _, store, _ = env
+    summary = pipeline.run()
+
+    assert summary.max_tokens_recorded <= config.CHUNK_HARD_LIMIT_TOKENS
+
+    stored = store.collection.get(include=["metadatas", "documents"])
+    required = {
+        "report_id",
+        "competition_name",
+        "competition_year",
+        "achievement_level",
+        "competition_type",
+        "section_type",
+        "source_file_id",
+        "chunk_id",
+    }
+    for metadata in stored["metadatas"]:
+        assert len(metadata) == 8
+        assert set(metadata) == required
+        assert isinstance(metadata["competition_year"], int)
+        assert metadata["section_type"] in {
+            "executive_summary",
+            "evaluasi_tim",
+            "saran_pengembangan",
+        }
+
+    # No judul_ide chunk, and every chunk carries the context header.
+    assert all("judul_ide" != m["section_type"] for m in stored["metadatas"])
+    assert all(doc.startswith("Kompetisi: ") for doc in stored["documents"])
+    assert all("Judul ide: " in doc.split("\n\n")[0] for doc in stored["documents"])
+
+    # Chunk ids are deterministic and namespaced by report_id.
+    for chunk_id, metadata in zip(stored["ids"], stored["metadatas"]):
+        assert chunk_id == metadata["chunk_id"]
+        assert chunk_id.startswith(f"{metadata['report_id']}:{metadata['section_type']}:")
+
+
+def test_second_run_does_not_reprocess(env):
+    pipeline, _, _, store, _ = env
+
+    first = pipeline.run()
+    first_count = store.count_chunks()
+
+    second = pipeline.run()
+
+    assert second.processed_count == 0
+    assert second.skipped_count == 14  # 13 Selesai + 1 Lainnya
+    assert store.count_chunks() == first_count
+    assert second.chunks_per_report == {}
+    assert first.chunks_per_report  # non-empty on the first run
+
+
+def test_changed_drive_file_id_replaces_chunks_without_duplicates(env):
+    pipeline, sheets, drive, store, _ = env
+    pipeline.run()
+
+    before = store.collection.get(where={"report_id": "RPT0001"})
+    before_count = len(before["ids"])
+    assert before_count > 0
+
+    new_file_id = "DRV_RPT0001_UPDATED_V2.pdf"
+    shutil.copyfile(
+        drive.local_pdf_dir / "DRV_RPT0001_NBPC.pdf", drive.local_pdf_dir / new_file_id
+    )
+    content = sheets.report_documents_csv.read_text(encoding="utf-8")
+    sheets.report_documents_csv.write_text(
+        content.replace("DRV_RPT0001_NBPC.pdf", new_file_id), encoding="utf-8"
+    )
 
     summary = pipeline.run()
 
-    # 1. Valid reports RPT0001 - RPT0010 and valid edge cases RPT0013, RPT0015 must be Selesai
-    docs_map = {d.report_id: d for d in sheets_repo.get_report_documents()}
-
-    for i in range(1, 11):
-        rid = f"RPT{i:04d}"
-        assert docs_map[rid].rag_status == RagStatus.SELESAI
-
-    # RPT0013 (over char limit) is valid and must pass with warning
-    assert docs_map["RPT0013"].rag_status == RagStatus.SELESAI
-    assert any("RPT0013" in w for w in summary.warnings)
-
-    # RPT0015 (PII case) is valid, PII is scrubbed and status Selesai
-    assert docs_map["RPT0015"].rag_status == RagStatus.SELESAI
-    assert "RPT0015" in summary.pii_redactions
-    assert summary.pii_redactions["RPT0015"]["nim"] > 0
-
-    # 2. Defective reports must be Proses gagal
-    # RPT0011 (scanned / no text)
-    assert docs_map["RPT0011"].rag_status == RagStatus.PROSES_GAGAL
-    # RPT0012 (missing section)
-    assert docs_map["RPT0012"].rag_status == RagStatus.PROSES_GAGAL
-
-    # 3. Lainnya (RPT0099) must be skipped
-    assert any(s["report_id"] == "RPT0099" for s in summary.skipped_reports)
-
-    # 4. Strict assertions: No chunk > 512 tokens & Exactly 8 metadata fields
-    assert summary.max_tokens_recorded <= config.CHUNK_HARD_LIMIT_TOKENS
-    all_chunks = chroma_store.collection.get(include=["metadatas", "documents"])
-    for m in all_chunks["metadatas"]:
-        assert len(m) == 8
-        assert "report_id" in m
-        assert "chunk_id" in m
-        assert "competition_name" in m
-        assert "competition_year" in m
-        assert "achievement_level" in m
-        assert "competition_type" in m
-        assert "section_type" in m
-        assert "source_file_id" in m
+    assert "RPT0001" in summary.processed_reports
+    after = store.collection.get(where={"report_id": "RPT0001"})
+    assert len(after["ids"]) == before_count
+    assert len(set(after["ids"])) == len(after["ids"])
+    assert {m["source_file_id"] for m in after["metadatas"]} == {new_file_id}
 
 
-def test_second_run_idempotency_no_reprocessing(test_env):
-    pipeline, sheets_repo, drive_repo, chroma_store, tmp_path = test_env
+def test_injected_mid_write_failure_cleans_up_and_retry_succeeds(env, monkeypatch):
+    pipeline, sheets, _, store, _ = env
 
-    # First run
-    pipeline.run()
-    initial_chunk_count = chroma_store.count_chunks()
-    assert initial_chunk_count > 0
+    real_add = store._add
 
-    # Second run without changes
-    summary2 = pipeline.run()
-    # All previously finished documents should be skipped
-    assert summary2.processed_count == 0
-    assert summary2.skipped_count >= 10
-    # Chunk count in vector store must be identical
-    assert chroma_store.count_chunks() == initial_chunk_count
+    def failing_add(ids, documents, metadatas, embeddings):
+        # Only RPT0001 fails, and it fails AFTER one chunk reached the collection.
+        if not str(ids[0]).startswith("RPT0001"):
+            return real_add(ids, documents, metadatas, embeddings)
+        store.collection.add(
+            ids=[ids[0]],
+            documents=[documents[0]],
+            metadatas=[metadatas[0]],
+            embeddings=[embeddings[0]],
+        )
+        raise RuntimeError("injected mid-write failure")
 
+    monkeypatch.setattr(store, "_add", failing_add)
+    summary = pipeline.run()
 
-def test_update_drive_file_id_replaces_old_chunks(test_env):
-    pipeline, sheets_repo, drive_repo, chroma_store, tmp_path = test_env
+    state = statuses(sheets)
+    assert state["RPT0001"] == RagStatus.PROSES_GAGAL
+    assert store.count_chunks_for_report("RPT0001") == 0
+    assert any(
+        "Gagal menyimpan" in r["reason"]
+        for r in summary.failed_reports
+        if r["report_id"] == "RPT0001"
+    )
+    # Other documents still completed.
+    assert state["RPT0002"] == RagStatus.SELESAI
 
-    pipeline.run()
-    old_chunks_r1 = chroma_store.collection.get(where={"report_id": "RPT0001"})
-    old_count = len(old_chunks_r1["ids"])
+    monkeypatch.undo()
 
-    # Simulate admin updating drive_file_id for RPT0001
-    new_file_id = "DRV_RPT0001_UPDATED_V2.pdf"
-    # Create updated PDF file in repo (name equals drive_file_id exactly)
-    updated_pdf = drive_repo.local_pdf_dir / new_file_id
-    sample_pdf = drive_repo.local_pdf_dir / "DRV_RPT0001_NBPC.pdf"
-    shutil.copyfile(sample_pdf, updated_pdf)
-
-    # Update report_documents CSV
-    with open(sheets_repo.report_documents_csv, "r", encoding="utf-8") as f:
-        content = f.read()
-    content = content.replace("DRV_RPT0001_NBPC", new_file_id)
-    with open(sheets_repo.report_documents_csv, "w", encoding="utf-8") as f:
-        f.write(content)
-
-    # Re-run pipeline
-    summary_update = pipeline.run()
-    assert "RPT0001" in summary_update.processed_reports
-
-    new_chunks_r1 = chroma_store.collection.get(where={"report_id": "RPT0001"})
-    assert len(new_chunks_r1["ids"]) == old_count
-    # All new chunks must reference the updated source_file_id
-    for m in new_chunks_r1["metadatas"]:
-        assert m["source_file_id"] == new_file_id
+    retry = pipeline.run()
+    assert "RPT0001" in retry.processed_reports
+    assert store.count_chunks_for_report("RPT0001") > 0
+    assert statuses(sheets)["RPT0001"] == RagStatus.SELESAI
 
 
-def test_simulated_failure_cleans_partial_chunks(test_env):
-    pipeline, sheets_repo, drive_repo, chroma_store, tmp_path = test_env
+def test_no_pii_left_in_chroma_and_funding_amount_survives(env):
+    pipeline, _, _, store, _ = env
+    summary = pipeline.run()
 
-    # Run with simulated failure on RPT0001
-    summary = pipeline.run(simulate_failure_on_report="RPT0001")
+    stored = store.collection.get(include=["documents"])
+    joined = "\n".join(stored["documents"])
 
-    # Status must be Proses gagal
-    docs_map = {d.report_id: d for d in sheets_repo.get_report_documents()}
-    assert docs_map["RPT0001"].rag_status == RagStatus.PROSES_GAGAL
+    for leaked in FORBIDDEN_PII:
+        assert leaked not in joined, f"PII leaked into Chroma: {leaked}"
 
-    # Partial chunks must be completely wiped from ChromaDB
-    res = chroma_store.collection.get(where={"report_id": "RPT0001"})
-    assert len(res["ids"]) == 0
+    assert joined.count(config.PII_REDACTION_REPLACEMENT) >= 4
+    # The legitimate funding amount is preserved (negative PII case).
+    assert "25000000" in joined
+    assert "Rp 25.000.000" in joined
 
-
-def test_no_pii_remains_in_chromadb(test_env):
-    pipeline, sheets_repo, drive_repo, chroma_store, tmp_path = test_env
-
-    pipeline.run()
-    all_docs = chroma_store.collection.get(include=["documents"])
-
-    for doc_text in all_docs["documents"]:
-        # Check that no simulated PII strings leaked
-        assert "13520099" not in doc_text
-        assert "081234567890" not in doc_text
-        assert "budi.santoso2024@gmail.com" not in doc_text
-        assert "hendra@institusi.ac.id" not in doc_text
+    redactions = summary.pii_redactions
+    assert redactions["RPT0015"]["nim"] >= 1
+    assert redactions["RPT0015"]["phone"] >= 2
+    assert redactions["RPT0015"]["email"] >= 2
+    assert redactions["RPT0015"]["name"] >= 3
+    # The monetary figure must not be counted as a redaction.
+    assert redactions.get("RPT0001", {}).get("nim", 0) == 0
 
 
-def test_manifest_and_artifact_roundtrip(test_env):
-    pipeline, sheets_repo, drive_repo, chroma_store, tmp_path = test_env
+def test_run_log_and_json_summary_are_written(env):
+    pipeline, _, _, _, tmp_path = env
+    summary = pipeline.run()
 
+    log_path = Path(summary.log_path)
+    summary_path = Path(summary.summary_path)
+    assert log_path.is_file()
+    assert summary_path.is_file()
+    assert log_path.parent == tmp_path / "logs"
+
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    for key in (
+        "started_at",
+        "finished_at",
+        "processed",
+        "skipped",
+        "failed",
+        "processed_reports",
+        "skipped_reports",
+        "failed_reports",
+        "warnings",
+        "char_limit_warnings",
+        "pii_redactions",
+        "name_redactions",
+        "chunks_per_report",
+        "total_chunks",
+        "max_tokens_observed",
+    ):
+        assert key in payload, key
+
+    assert payload["processed"] == 13
+    assert payload["failed"] == 2
+    assert payload["max_tokens_observed"] <= config.CHUNK_HARD_LIMIT_TOKENS
+    assert len(payload["char_limit_warnings"]) == 1
+    assert "RPT0013" in payload["char_limit_warnings"][0]
+    assert payload["name_redactions"]["RPT0015"] >= 1
+
+    # No document text and no raw personal data in the log file.
+    log_text = log_path.read_text(encoding="utf-8")
+    for leaked in FORBIDDEN_PII:
+        assert leaked not in log_text
+    assert "NutriTrack" not in log_text
+
+
+def test_manifest_and_artifact_roundtrip(env):
+    pipeline, _, drive, store, tmp_path = env
     pipeline.run()
 
-    sync = ChromaSync(chroma_store=chroma_store, drive_repo=drive_repo)
-    zip_path = tmp_path / "artifacts" / "chroma_backup.zip"
-    manifest_path = tmp_path / "artifacts" / "manifest.json"
+    sync = ChromaSync(chroma_store=store, drive_repo=drive)
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    zip_path = work_dir / "chroma_backup.zip"
+    manifest_path = work_dir / "manifest.json"
 
-    manifest_data = sync.sync_to_drive(zip_path, manifest_path)
-    assert manifest_data["report_count"] >= 10
-    assert manifest_data["chunk_count"] > 0
-    assert manifest_data["embedding_model"] == config.EMBEDDING_MODEL_NAME
+    manifest = sync.sync_to_drive(zip_path, manifest_path)
+    assert manifest["report_count"] >= 10
+    assert manifest["chunk_count"] == store.count_chunks()
+    assert manifest["embedding_model"] == config.EMBEDDING_MODEL_NAME
+    assert manifest["schema_version"] == config.MANIFEST_SCHEMA_VERSION
+    assert manifest["zip_checksum"] == ChromaSync.calculate_file_hash(zip_path)
 
-    # Test restoring to a new directory
+    # Reload from the uploaded copies, not from the local working files.
+    download_dir = tmp_path / "downloaded"
+    download_dir.mkdir()
+    assert drive.download_artifact("chroma_backup.zip", str(download_dir / "chroma_backup.zip"))
+    assert drive.download_artifact("manifest.json", str(download_dir / "manifest.json"))
+
+    downloaded_manifest = json.loads(
+        (download_dir / "manifest.json").read_text(encoding="utf-8")
+    )
+    ChromaSync.validate_manifest(downloaded_manifest)
+
     restore_dir = tmp_path / "restored_chroma"
-    sync.restore_from_zip(zip_path, restore_dir)
+    ChromaSync.restore_from_zip(download_dir / "chroma_backup.zip", restore_dir)
     assert (restore_dir / "chroma.sqlite3").exists()
 
+    restored_store = ChromaStore(persist_dir=restore_dir)
+    assert restored_store.count_chunks() == store.count_chunks()
+    assert restored_store.get_all_report_ids() == store.get_all_report_ids()
 
-def test_heading_detection_tolerance():
-    """Verify heading parser is tolerant to variations in casing, numbering, and spacing."""
-    parser = PDFParser()
 
-    varied_text = (
-        "1. JUDUL IDE: Inovasi Solar Cell\n"
-        "Ini adalah penjelasan judul ide yang sangat inovatif.\n\n"
-        "2) abstrak :\n"
-        "Executive summary mengenai panel surya generasi ketiga dengan efisiensi tinggi.\n\n"
-        "III - Evaluasi Tim :\n"
-        "Kerjasama tim berjalan sangat baik selama masa persiapan kompetisi.\n\n"
-        "4.   Saran Pengembangan  \n"
-        "Disarankan menambah kapasitas baterai penyimpanan daya untuk malam hari.\n"
+def test_invalid_metadata_fails_with_validator_reason(tmp_path):
+    (tmp_path / "c.csv").write_text(
+        "report_id,competition_name,competition_year,achievement_level,competition_type\n"
+        "RPT9001,Lomba A,2024,Juara Khayalan,Essay\n"
+        "RPT9002,Lomba B,bukan-tahun,Juara 1,Essay\n"
+        "RPT0001,Lomba C,2024,Juara 1,Essay\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "d.csv").write_text(
+        "report_id,drive_file_id,rag_status\n"
+        "RPT9001,DRV_RPT0001_NBPC.pdf,Belum diproses\n"
+        "RPT9002,DRV_RPT0001_NBPC.pdf,Belum diproses\n"
+        "RPT0001,DRV_RPT0001_NBPC.pdf,Belum diproses\n",
+        encoding="utf-8",
+    )
+    shutil.copytree(config.DUMMY_PDF_DIR, tmp_path / "pdfs")
+
+    sheets = LocalSheetsRepo(tmp_path / "c.csv", tmp_path / "d.csv")
+    drive = LocalDriveRepo(tmp_path / "pdfs", tmp_path / "artifacts")
+    store = ChromaStore(persist_dir=tmp_path / "chroma_db")
+    pipeline = IngestionPipeline(
+        sheets,
+        drive,
+        store,
+        embedder=HashEmbedder(),
+        chunker=SectionAwareChunker(tokenizer=WordCountTokenizer()),
+        temp_download_dir=tmp_path / "dl",
+        log_dir=tmp_path / "logs",
     )
 
-    success, sections, err = parser.parse_sections(varied_text)
-    assert success is True
-    assert "Inovasi Solar Cell" in sections["judul_ide"]
-    assert "Executive summary" in sections["executive_summary"]
-    assert "Kerjasama tim" in sections["evaluasi_tim"]
-    assert "Disarankan menambah" in sections["saran_pengembangan"]
+    summary = pipeline.run()
+    reasons = {r["report_id"]: r["reason"] for r in summary.failed_reports}
+
+    assert "achievement_level tidak valid" in reasons["RPT9001"]
+    assert "competition_year" in reasons["RPT9002"]
+    assert statuses(sheets)["RPT9001"] == RagStatus.PROSES_GAGAL
+    assert statuses(sheets)["RPT0001"] == RagStatus.SELESAI

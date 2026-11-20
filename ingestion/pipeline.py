@@ -12,6 +12,8 @@ Orchestrates:
 9. Compressing vector store and uploading manifest.
 """
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import logging
@@ -40,9 +42,22 @@ class IngestionSummary:
     skipped_reports: List[Dict[str, str]] = field(default_factory=list)
     failed_reports: List[Dict[str, str]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    char_limit_warnings: List[str] = field(default_factory=list)
     pii_redactions: Dict[str, Dict[str, int]] = field(default_factory=dict)
     chunks_per_report: Dict[str, int] = field(default_factory=dict)
     max_tokens_recorded: int = 0
+    started_at: str = ""
+    finished_at: str = ""
+    duration_seconds: float = 0.0
+    log_path: str = ""
+    summary_path: str = ""
+
+    def name_redactions(self) -> Dict[str, int]:
+        return {
+            report_id: counts.get("name", 0)
+            for report_id, counts in self.pii_redactions.items()
+            if counts.get("name", 0)
+        }
 
 
 class IngestionPipeline:
@@ -56,6 +71,7 @@ class IngestionPipeline:
         embedder: Optional[E5Embedder] = None,
         temp_download_dir: Optional[Path] = None,
         chunker: Optional[SectionAwareChunker] = None,
+        log_dir: Optional[Path] = None,
     ):
         self.sheets_repo = sheets_repo
         self.drive_repo = drive_repo
@@ -67,12 +83,72 @@ class IngestionPipeline:
         self.chunker = chunker or SectionAwareChunker()
         self.temp_download_dir = temp_download_dir or (config.DATA_DIR / "temp_downloads")
         self.temp_download_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir = Path(log_dir) if log_dir else Path(config.LOG_DIR)
+        self._file_handler: Optional[logging.Handler] = None
 
-    def run(self, simulate_failure_on_report: Optional[str] = None) -> IngestionSummary:
+    def _start_run_logging(self) -> Path:
+        """Attach a per-run FileHandler so each batch keeps its own log file."""
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        log_path = self.log_dir / f"{config.LOG_FILE_PREFIX}_{timestamp}.log"
+
+        if self._file_handler is not None:
+            logger.removeHandler(self._file_handler)
+            self._file_handler.close()
+
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+        )
+        logger.addHandler(handler)
+        logger.setLevel(config.LOG_LEVEL)
+        self._file_handler = handler
+        return log_path
+
+    def _write_run_summary(
+        self, summary: IngestionSummary, started: datetime
+    ) -> Path:
+        finished = datetime.now(timezone.utc)
+        summary.started_at = started.isoformat()
+        summary.finished_at = finished.isoformat()
+        summary.duration_seconds = round((finished - started).total_seconds(), 3)
+
+        summary_path = self.log_dir / f"run_{summary.started_at.replace(':', '').replace('.', '')}.json"
+        payload = {
+            "started_at": summary.started_at,
+            "finished_at": summary.finished_at,
+            "duration_seconds": summary.duration_seconds,
+            "processed": summary.processed_count,
+            "skipped": summary.skipped_count,
+            "failed": summary.failed_count,
+            "processed_reports": summary.processed_reports,
+            "skipped_reports": summary.skipped_reports,
+            "failed_reports": summary.failed_reports,
+            "warnings": summary.warnings,
+            "char_limit_warnings": summary.char_limit_warnings,
+            "pii_redactions": summary.pii_redactions,
+            "name_redactions": summary.name_redactions(),
+            "chunks_per_report": summary.chunks_per_report,
+            "total_chunks": sum(summary.chunks_per_report.values()),
+            "max_tokens_observed": summary.max_tokens_recorded,
+            "log_file": summary.log_path,
+        }
+        summary_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        summary.summary_path = str(summary_path)
+        logger.info("Run summary written to %s", summary_path)
+        return summary_path
+
+    def run(self) -> IngestionSummary:
         """
         Run the ingestion pipeline across all documents in report_documents.
         """
+        started = datetime.now(timezone.utc)
+        log_path = self._start_run_logging()
+
         summary = IngestionSummary()
+        summary.log_path = str(log_path)
         logger.info("Starting Lab Prestasi ingestion batch...")
 
         # 1. Read report_documents and competition_reports
@@ -170,6 +246,7 @@ class IngestionPipeline:
             for w in char_warnings:
                 logger.warning("[%s] %s", report_id, w)
                 summary.warnings.append(f"[{report_id}] {w}")
+                summary.char_limit_warnings.append(f"[{report_id}] {w}")
 
             # Step 8: PII Scrubbing
             scrubbed_sections = {}
@@ -236,12 +313,10 @@ class IngestionPipeline:
                     summary.max_tokens_recorded = c.token_count
 
             # Step 10: Delete-then-insert into ChromaDB
-            should_fail = (simulate_failure_on_report == report_id)
             try:
                 self.chroma_store.insert_chunks(
                     chunks=report_chunks,
                     embeddings=embeddings,
-                    simulate_failure=should_fail,
                 )
             except Exception as e:
                 reason = f"Gagal menyimpan ke ChromaDB: {str(e)}"
@@ -263,4 +338,5 @@ class IngestionPipeline:
             summary.skipped_count,
             summary.failed_count,
         )
+        self._write_run_summary(summary, started)
         return summary
