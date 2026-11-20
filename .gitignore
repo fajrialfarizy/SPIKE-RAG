@@ -43,6 +43,9 @@ data/*.pdf
 logs/
 *.log
 
+# PII deny-list (real names never enter git; example file is committed)
+pii_denylist.txt
+
 # Pytest / Cache
 .pytest_cache/
 .coverage

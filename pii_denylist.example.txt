@@ -1,0 +1,8 @@
+# PII name deny-list (example).
+# Copy to pii_denylist.txt (gitignored) and list one name per line.
+# Matching is whole-word and case-sensitive. Lines starting with # are ignored.
+#
+# Dummy names used by the generated corpus:
+Budi Santoso
+Ahmad Fauzi
+Hendra

@@ -100,13 +100,80 @@ PATTERN_REPORT_ID = re.compile(r"RPT[0-9]{4,}")
 PATTERN_CITATION_TAG = re.compile(r"\[(S[0-9]+)\]")
 PATTERN_YEAR = re.compile(r"\b(20[1-9][0-9])\b")
 
-# PII Scrubbing Regex Patterns (Indonesian Context)
-# NIM in Indonesian universities typically ranges from 8 to 14 digits (e.g., ITB 8 digits, UI 10 digits, UGM 9-11 digits)
-PATTERN_PII_NIM = re.compile(r"\b[0-9]{8,14}\b")
-PATTERN_PII_PHONE = re.compile(r"(?:\+62|62|08)[0-9]{8,12}\b")
-PATTERN_PII_EMAIL = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
-
+# PII Scrubbing (Brief 5.2 #8, PRD 6.3)
+# Order matters: email -> phone -> labelled NIM -> unlabelled NIM -> names.
 PII_REDACTION_REPLACEMENT = "[DIREDAKSI]"
+
+PATTERN_PII_EMAIL = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
+PATTERN_PII_PHONE = re.compile(r"(?:\+62|62|08)[0-9]{8,12}\b")
+
+# NIM/NPM/NRP are always redacted when a label is present.
+PATTERN_PII_NIM_LABELED = re.compile(
+    r"(?i)\b(?:(?:NIM|NPM|NRP)\b|nomor\s+induk)\s*[:.=\-]?\s*(?P<number>[0-9]{8,14})"
+)
+# Unlabelled 8-14 digit numbers are treated as NIM unless an amount context
+# precedes them (see PII_CURRENCY_CONTEXT_WORDS). Numbers written with thousand
+# separators (25.000.000) never match this pattern.
+PATTERN_PII_NIM = re.compile(r"\b[0-9]{8,14}\b")
+PII_CURRENCY_CONTEXT_WORDS = (
+    "rp",
+    "idr",
+    "usd",
+    "rupiah",
+    "dana",
+    "biaya",
+    "anggaran",
+    "hadiah",
+    "nominal",
+    "sebesar",
+    "senilai",
+)
+PII_CURRENCY_CONTEXT_WINDOW = 40
+
+# Personal names. No NER dependency: honourifics, role labels, academic
+# suffixes and an optional deny-list are used instead (residual risk documented).
+PII_NAME_TOKEN = r"[A-Z][A-Za-z'\-]{1,}"
+PII_NAME_SEQUENCE = rf"{PII_NAME_TOKEN}(?:\s+{PII_NAME_TOKEN}){{0,3}}"
+PII_NAME_TITLES = (
+    "Dr",
+    "Prof",
+    "Ir",
+    "Drs",
+    "Dra",
+    "Bapak",
+    "Pak",
+    "Ibu",
+    "Bu",
+    "Mas",
+    "Mbak",
+    "Kak",
+    "Sdr",
+    "Saudara",
+    "Sdri",
+)
+PII_NAME_ROLE_LABELS = (
+    "kontak pelapor",
+    "dosen pembimbing",
+    "ketua tim",
+    "anggota tim",
+    "pembimbing",
+    "mentor",
+    "narasumber",
+    "pelapor",
+)
+PATTERN_PII_NAME_WITH_TITLE = re.compile(
+    rf"\b(?:{'|'.join(PII_NAME_TITLES)})\s*\.?\s*"
+    rf"(?:(?:{'|'.join(PII_NAME_TITLES)})\s*\.?\s*)*{PII_NAME_SEQUENCE}"
+)
+PATTERN_PII_NAME_AFTER_ROLE = re.compile(
+    rf"\b(?i:{'|'.join(PII_NAME_ROLE_LABELS)})\s+(?P<name>{PII_NAME_SEQUENCE})"
+)
+PATTERN_PII_NAME_WITH_SUFFIX = re.compile(
+    rf"\b{PII_NAME_SEQUENCE}\s*,\s*(?:S|M|A)\.\s?[A-Za-z]{{1,3}}\.?"
+    rf"(?:\s*,?\s*(?:S|M|A)\.\s?[A-Za-z]{{1,3}}\.?)*"
+)
+# Optional deny-list of dummy (or later: real) names; the real file is gitignored.
+PII_NAME_DENYLIST_PATH = BASE_DIR / "pii_denylist.txt"
 
 # Section heading detection (Brief 5.2 #6)
 # Tolerant to numbering (arabic or roman), ``1.``/``2)``/``III -`` styles, mixed case,
