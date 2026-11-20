@@ -6,6 +6,10 @@ Input side:
   personal or administrative data (NIM/NPM, phone/WA, email, address, or the
   identity of the reporter, leader, member, mentor or supervisor). It is
   deliberately conservative: questions that merely mention a role stay allowed.
+- ``detect_instruction_override`` catches obvious attempts to extract the
+  system prompt or to override the instructions, and refuses them before any
+  model call. It needs both an action verb and a target phrase, so a legitimate
+  question that merely contains the word "instruksi" or "prompt" passes.
 
 Output side:
 - every answer is scrubbed with the ingestion PII sieve (including the name
@@ -23,6 +27,19 @@ from typing import Dict, Optional
 import config
 from core import prompts
 from ingestion.pii_scrubber import PIIScrubber
+
+
+def detect_instruction_override(question: str) -> Optional[str]:
+    """Return a category when a question clearly attacks the instructions."""
+    text = question or ""
+
+    if config.PATTERN_SECURITY_PROMPT_EXTRACT.search(text):
+        return "prompt_extraction"
+    if config.PATTERN_SECURITY_INSTRUCTION_OVERRIDE.search(text):
+        return "instruction_override"
+    if config.PATTERN_SECURITY_IGNORE_PREVIOUS.search(text):
+        return "instruction_override"
+    return None
 
 
 def detect_privacy_request(question: str) -> Optional[str]:

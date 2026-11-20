@@ -29,7 +29,11 @@ from core.analyzer import Analyzer
 from core.citations import build_source_block, compose_answer, process_citations
 from core.context_builder import ContextBuilder
 from core.deadline import Deadline, DeadlineExceeded
-from core.guardrails import OutputGuard, detect_privacy_request
+from core.guardrails import (
+    OutputGuard,
+    detect_instruction_override,
+    detect_privacy_request,
+)
 from core.llm_client import LLMClient
 from core.retriever import Retriever, RetrievedChunk
 from enums import QueryMode
@@ -184,7 +188,8 @@ class RagPipeline:
             "retrieved": [],
             "alias_map": {},
             "incidents": {"unknown_alias": 0, "fabricated_report_id": 0,
-                          "pii_masked": 0, "prompt_leak": 0},
+                          "pii_masked": 0, "prompt_leak": 0,
+                          "security_request": 0},
             "missing_report_ids": [],
             "used_fallback": False,
             "input_truncated": False,
@@ -247,7 +252,17 @@ class RagPipeline:
                     AnswerStatus.PRIVACY_REFUSED, prompts.PRIVACY_REFUSAL_RESPONSE
                 )
 
-            # 2. Exact report-id route.
+            # 2. Instruction attack: refused before any model call.
+            security_category = detect_instruction_override(text)
+            if security_category:
+                logger.info("chat_security_refused category=%s", security_category)
+                state["route"] = "security"
+                state["incidents"]["security_request"] = 1
+                return result(
+                    AnswerStatus.SECURITY_REFUSED, prompts.SECURITY_REFUSAL_RESPONSE
+                )
+
+            # 3. Exact report-id route.
             report_ids = list(
                 dict.fromkeys(config.PATTERN_REPORT_ID.findall(text))
             )[: config.MAX_REPORT_IDS_BYPASS]
@@ -267,7 +282,7 @@ class RagPipeline:
                     deadline=deadline,
                 )
 
-            # 3. Analyzer.
+            # 4. Analyzer.
             deadline.require_remaining()
             analysis = self.analyzer.analyze(text, deadline=deadline)
             state["mode"] = analysis.mode.value
@@ -278,7 +293,7 @@ class RagPipeline:
                 state["route"] = "out_of_scope"
                 return result(AnswerStatus.OUT_OF_SCOPE, prompts.OUT_OF_SCOPE_RESPONSE)
 
-            # 4. Retrieval.
+            # 5. Retrieval.
             if analysis.mode is QueryMode.CATALOG:
                 state["route"] = "catalog"
                 reports = self.retriever.list_catalog(analysis.filters)
