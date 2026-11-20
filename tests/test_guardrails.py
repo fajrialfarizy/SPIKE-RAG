@@ -109,7 +109,7 @@ def test_system_prompt_verbatim_is_blocked():
 
     assert result.blocked is True
     assert result.incidents["prompt_leak"] == 1
-    assert result.text == prompts.PROMPT_LEAK_REFUSAL_RESPONSE
+    assert result.text == prompts.SECURITY_REFUSAL_RESPONSE
     assert "asisten AI Lab Prestasi" not in result.text
 
 

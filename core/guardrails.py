@@ -96,7 +96,7 @@ class OutputGuard:
         if self.detect_prompt_leak(answer):
             incidents["prompt_leak"] = 1
             return GuardResult(
-                text=prompts.PROMPT_LEAK_REFUSAL_RESPONSE,
+                text=prompts.SECURITY_REFUSAL_RESPONSE,
                 incidents=incidents,
                 blocked=True,
             )

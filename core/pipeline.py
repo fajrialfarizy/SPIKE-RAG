@@ -42,6 +42,7 @@ class AnswerStatus(str, Enum):
     NOT_FOUND = "NOT_FOUND"
     OUT_OF_SCOPE = "OUT_OF_SCOPE"
     PRIVACY_REFUSED = "PRIVACY_REFUSED"
+    SECURITY_REFUSED = "SECURITY_REFUSED"
     NO_SOURCE = "NO_SOURCE"
     TECHNICAL_ERROR = "TECHNICAL_ERROR"
 
@@ -346,7 +347,7 @@ class RagPipeline:
 
         if guarded.blocked:
             # A blocked answer carries no source block, so it claims no sources.
-            return result(AnswerStatus.PRIVACY_REFUSED, guarded.text, cited=[])
+            return result(AnswerStatus.SECURITY_REFUSED, guarded.text, cited=[])
 
         source_block = build_source_block(
             citations.cited_report_ids, bundle.report_metadata

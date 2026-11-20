@@ -363,8 +363,8 @@ def test_prompt_leak_answer_is_replaced_with_refusal():
 
     result = pipeline.run(QUESTION)
 
-    assert result.status is AnswerStatus.PRIVACY_REFUSED
-    assert result.answer == prompts.PROMPT_LEAK_REFUSAL_RESPONSE
+    assert result.status is AnswerStatus.SECURITY_REFUSED
+    assert result.answer == prompts.SECURITY_REFUSAL_RESPONSE
     assert result.debug.incidents["prompt_leak"] == 1
 
 

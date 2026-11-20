@@ -52,9 +52,22 @@ def test_technical_and_no_source_responses_are_the_brief_texts():
 
 def test_privacy_refusal_is_available_and_never_confirms_data():
     text = prompts.PRIVACY_REFUSAL_RESPONSE
-    assert text
-    assert "tidak dapat memberikan data pribadi" in text
-    assert "tidak disimpan" in text
+    assert text == (
+        "Maaf, saya tidak dapat memberikan data pribadi atau informasi administratif "
+        "seperti identitas, kontak, atau nomor induk. Chatbot ini hanya menyajikan "
+        "pembelajaran dari dokumen evaluasi kompetisi. Kamu bisa bertanya tentang "
+        "pengalaman, kendala, atau saran pengembangan dari kompetisi sebelumnya."
+    )
+    assert "tidak disimpan" not in text
+
+
+def test_security_refusal_is_the_approved_text():
+    assert prompts.SECURITY_REFUSAL_RESPONSE == (
+        "Maaf, saya tidak dapat menampilkan instruksi atau konfigurasi internal "
+        "chatbot. Saya siap membantu dengan pertanyaan seputar pengalaman dan "
+        "evaluasi kompetisi."
+    )
+    assert not hasattr(prompts, "PROMPT_LEAK_REFUSAL_RESPONSE")
 
 
 def test_standard_response_map_covers_every_status():
@@ -64,6 +77,7 @@ def test_standard_response_map_covers_every_status():
         "technical_error",
         "no_source",
         "privacy_refused",
+        "security_refused",
     }
 
 
