@@ -14,6 +14,7 @@ from core.retriever import (
     build_where_filter,
 )
 from enums import QueryMode
+from ingestion.embedder import E5Embedder
 from tests.stubs import FakeKnowledgeBase, RecordingEmbedder
 
 
@@ -90,6 +91,13 @@ def test_all_three_conditions_produce_three_branches():
 
 
 # -- semantic retrieval ---------------------------------------------------
+def test_default_embedder_is_the_ingestion_embedder():
+    retriever = Retriever(FakeKnowledgeBase())
+
+    assert isinstance(retriever.embedder, E5Embedder)
+    assert retriever.embedder.model_name == config.EMBEDDING_MODEL_NAME
+
+
 def test_query_uses_the_ingestion_prefix_exactly_once():
     retriever, kb, embedder = make_retriever([match("RPT0001", "RPT0001:evaluasi_tim:01", 0.1)])
 

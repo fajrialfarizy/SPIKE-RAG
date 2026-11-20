@@ -229,6 +229,7 @@ class RagPipeline:
             privacy_category = detect_privacy_request(text)
             if privacy_category:
                 logger.info("chat_privacy_refused category=%s", privacy_category)
+                state["route"] = "privacy"
                 state["incidents"]["privacy_request"] = 1
                 return result(
                     AnswerStatus.PRIVACY_REFUSED, prompts.PRIVACY_REFUSAL_RESPONSE
@@ -344,11 +345,8 @@ class RagPipeline:
             state["incidents"][key] = state["incidents"].get(key, 0) + value
 
         if guarded.blocked:
-            return result(
-                AnswerStatus.PRIVACY_REFUSED,
-                guarded.text,
-                cited=citations.cited_report_ids,
-            )
+            # A blocked answer carries no source block, so it claims no sources.
+            return result(AnswerStatus.PRIVACY_REFUSED, guarded.text, cited=[])
 
         source_block = build_source_block(
             citations.cited_report_ids, bundle.report_metadata
