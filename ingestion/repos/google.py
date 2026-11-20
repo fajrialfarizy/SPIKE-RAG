@@ -1,14 +1,19 @@
 """
 Google Cloud implementation of SheetsRepo and DriveRepo for Production.
 Connects via gspread and google-api-python-client with minimal read/write scopes.
-Strictly excludes personal data from logs and pipeline boundaries.
+
+Column selection happens at the repository boundary (Brief 5.1): only the five
+RAG-allowed columns of competition_reports and the three columns of
+report_documents are ever fetched from Google Sheets. Personal/administrative
+columns are never downloaded into the process and raw rows are never logged.
 """
 
 import io
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Sequence
 import logging
 
+import config
 from enums import CompetitionType, AchievementLevel, RagStatus
 from ingestion.repos.base import (
     SheetsRepo,
@@ -20,12 +25,25 @@ from ingestion.repos.base import (
 logger = logging.getLogger(__name__)
 
 
+def column_letter(index_1based: int) -> str:
+    """Convert a 1-based column index to its spreadsheet letter (1 -> A, 27 -> AA)."""
+    if index_1based < 1:
+        raise ValueError(f"Column index must be >= 1, got {index_1based}")
+    letters = ""
+    index = index_1based
+    while index > 0:
+        index, remainder = divmod(index - 1, 26)
+        letters = chr(ord("A") + remainder) + letters
+    return letters
+
+
 class GoogleSheetsRepo(SheetsRepo):
     """
     Production implementation of SheetsRepo using gspread.
-    Enforces privacy by reading only the required 5 columns from competition_reports
-    and strictly 3 columns from report_documents.
-    Raw row contents with personal data are never logged.
+
+    `worksheet.batch_get` is used with one range per required column so that
+    PII columns are never requested. `get_all_records()` is deliberately unused
+    because it would fetch every column of the worksheet.
     """
 
     def __init__(self, spreadsheet_id: str, credentials_dict: Dict[str, Any]):
@@ -49,11 +67,61 @@ class GoogleSheetsRepo(SheetsRepo):
             self._spreadsheet = self._client.open_by_key(self.spreadsheet_id)
         return self._spreadsheet
 
+    @staticmethod
+    def _read_selected_columns(
+        worksheet, required_columns: Sequence[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch ONLY the required columns of a worksheet.
+
+        Returns one dict per data row, keyed by the required column names.
+        Raises ValueError when the worksheet header lacks a required column.
+        """
+        header = [str(cell).strip() for cell in worksheet.row_values(1)]
+        missing = [name for name in required_columns if name not in header]
+        if missing:
+            raise ValueError(
+                f"Worksheet '{getattr(worksheet, 'title', '?')}' is missing required "
+                f"columns: {missing}"
+            )
+
+        id_column = header.index(config.SHEET_KEY_COLUMN) + 1
+        # Column A/ID values are only used to determine how many data rows exist.
+        id_values = worksheet.col_values(id_column)
+        row_count = len(id_values)
+        if row_count < 2:
+            return []
+
+        ranges = []
+        for name in required_columns:
+            letter = column_letter(header.index(name) + 1)
+            ranges.append(f"{letter}2:{letter}{row_count}")
+
+        columns = worksheet.batch_get(ranges, value_render_option="UNFORMATTED_VALUE")
+
+        rows: List[Dict[str, Any]] = []
+        for offset in range(row_count - 1):
+            row: Dict[str, Any] = {}
+            for name, column in zip(required_columns, columns):
+                value = column[offset] if offset < len(column) else ""
+                row[name] = value
+            rows.append(row)
+
+        logger.info(
+            "Fetched %d rows with %d selected columns from worksheet '%s'",
+            len(rows),
+            len(required_columns),
+            getattr(worksheet, "title", "?"),
+        )
+        return rows
+
     def get_report_documents(self) -> List[ReportDocumentRow]:
         """Fetch all rows from report_documents worksheet (strictly 3 columns)."""
         ss = self._get_spreadsheet()
-        worksheet = ss.worksheet("report_documents")
-        records = worksheet.get_all_records()
+        worksheet = ss.worksheet(config.WORKSHEET_REPORT_DOCUMENTS)
+        records = self._read_selected_columns(
+            worksheet, config.SHEET_COLUMNS_REPORT_DOCUMENTS
+        )
 
         rows: List[ReportDocumentRow] = []
         for r in records:
@@ -80,12 +148,14 @@ class GoogleSheetsRepo(SheetsRepo):
 
     def get_competition_reports(self) -> List[CompetitionReportMetadata]:
         """
-        Fetch competition reports filtered strictly to RAG-allowed fields.
-        All administrative / personal fields (NIM, phone, name, mentor) are ignored.
+        Fetch competition reports restricted to the five RAG-allowed columns.
+        Metadata enum/year validity is decided later by the ingestion validator.
         """
         ss = self._get_spreadsheet()
-        worksheet = ss.worksheet("competition_reports")
-        records = worksheet.get_all_records()
+        worksheet = ss.worksheet(config.WORKSHEET_COMPETITION_REPORTS)
+        records = self._read_selected_columns(
+            worksheet, config.SHEET_COLUMNS_COMPETITION_REPORTS
+        )
 
         reports: List[CompetitionReportMetadata] = []
         for r in records:
@@ -93,43 +163,39 @@ class GoogleSheetsRepo(SheetsRepo):
             if not report_id:
                 continue
 
-            try:
-                c_type = CompetitionType(str(r.get("competition_type", "")).strip())
-                a_level = AchievementLevel(str(r.get("achievement_level", "")).strip())
-                year = int(str(r.get("competition_year", "0")).strip())
-            except ValueError as e:
-                logger.warning(
-                    "Skipping report %s with invalid metadata enum or year: %s",
-                    report_id,
-                    str(e),
-                )
-                continue
-
             reports.append(
                 CompetitionReportMetadata(
                     report_id=report_id,
                     competition_name=str(r.get("competition_name", "")).strip(),
-                    competition_year=year,
-                    achievement_level=a_level,
-                    competition_type=c_type,
+                    competition_year=str(r.get("competition_year", "")).strip(),
+                    achievement_level=str(r.get("achievement_level", "")).strip(),
+                    competition_type=str(r.get("competition_type", "")).strip(),
                 )
             )
         logger.info(
-            "Retrieved %d valid competition report metadata entries", len(reports)
+            "Retrieved %d competition report metadata rows", len(reports)
         )
         return reports
 
     def update_rag_status(self, report_id: str, new_status: RagStatus) -> bool:
         """Update rag_status for a given report_id in report_documents."""
         ss = self._get_spreadsheet()
-        worksheet = ss.worksheet("report_documents")
-        cell = worksheet.find(report_id)
+        worksheet = ss.worksheet(config.WORKSHEET_REPORT_DOCUMENTS)
+
+        header = [str(cell).strip() for cell in worksheet.row_values(1)]
+        if config.SHEET_COLUMN_RAG_STATUS not in header:
+            raise ValueError(
+                f"Worksheet '{config.WORKSHEET_REPORT_DOCUMENTS}' has no "
+                f"'{config.SHEET_COLUMN_RAG_STATUS}' column"
+            )
+
+        cell = worksheet.find(report_id, in_column=1)
         if not cell:
             logger.error("Could not find report_id %s in report_documents", report_id)
             return False
 
-        # rag_status is in column 3
-        worksheet.update_cell(cell.row, 3, new_status.value)
+        status_column = header.index(config.SHEET_COLUMN_RAG_STATUS) + 1
+        worksheet.update_cell(cell.row, status_column, new_status.value)
         logger.info("Updated report %s rag_status to %s", report_id, new_status.value)
         return True
 
@@ -150,7 +216,10 @@ class GoogleDriveRepo(DriveRepo):
             from googleapiclient.discovery import build
             from google.oauth2.service_account import Credentials
 
-            scopes = ["https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive.readonly"]
+            scopes = [
+                "https://www.googleapis.com/auth/drive.file",
+                "https://www.googleapis.com/auth/drive.readonly",
+            ]
             creds = Credentials.from_service_account_info(
                 self.credentials_dict, scopes=scopes
             )
@@ -160,7 +229,6 @@ class GoogleDriveRepo(DriveRepo):
     def download_pdf(self, file_id: str, destination_path: str) -> bool:
         """Download file by exact Drive file_id."""
         from googleapiclient.http import MediaIoBaseDownload
-        import googleapiclient.errors
 
         service = self._get_service()
         dest = Path(destination_path)
@@ -208,7 +276,10 @@ class GoogleDriveRepo(DriveRepo):
         dest = Path(destination_path)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
-        query = f"name = '{remote_filename}' and '{self.folder_id}' in parents and trashed = false"
+        query = (
+            f"name = '{remote_filename}' and '{self.folder_id}' in parents "
+            f"and trashed = false"
+        )
         results = (
             service.files()
             .list(q=query, spaces="drive", fields="files(id, name)")
@@ -216,7 +287,11 @@ class GoogleDriveRepo(DriveRepo):
         )
         items = results.get("files", [])
         if not items:
-            logger.warning("Remote artifact %s not found in folder %s", remote_filename, self.folder_id)
+            logger.warning(
+                "Remote artifact %s not found in folder %s",
+                remote_filename,
+                self.folder_id,
+            )
             return False
 
         remote_file_id = items[0]["id"]

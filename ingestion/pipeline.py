@@ -97,7 +97,7 @@ class IngestionPipeline:
             meta = reports_meta[report_id]
 
             # Brief 5.2 #3: If competition_type = Lainnya, skip + warning
-            if meta.competition_type == CompetitionType.LAINNYA:
+            if str(meta.competition_type).strip() == CompetitionType.LAINNYA.value:
                 reason = "competition_type = 'Lainnya' tidak pernah diproses ke RAG"
                 logger.warning("Report %s dilewati: %s", report_id, reason)
                 summary.skipped_count += 1
@@ -172,8 +172,8 @@ class IngestionPipeline:
                     report_id=report_id,
                     competition_name=meta.competition_name,
                     competition_year=meta.competition_year,
-                    competition_type=meta.competition_type.value,
-                    achievement_level=meta.achievement_level.value,
+                    competition_type=str(meta.competition_type),
+                    achievement_level=str(meta.achievement_level),
                     source_file_id=drive_file_id,
                     judul_ide=judul_ide,
                     section_type=sec_type,

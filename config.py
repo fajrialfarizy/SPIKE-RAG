@@ -46,6 +46,26 @@ SECTION_CHAR_LIMITS = {
 # PDF Minimum Text Length for Scanned Document Detection
 PDF_MIN_TEXT_CHARS = 100
 
+# Google Sheets schema (Brief 5.1)
+# Only these columns may cross the repository boundary. PII and administrative
+# columns are never fetched, never modelled and never logged.
+WORKSHEET_COMPETITION_REPORTS = "competition_reports"
+WORKSHEET_REPORT_DOCUMENTS = "report_documents"
+SHEET_KEY_COLUMN = "report_id"
+SHEET_COLUMN_RAG_STATUS = "rag_status"
+SHEET_COLUMNS_COMPETITION_REPORTS = (
+    "report_id",
+    "competition_name",
+    "competition_year",
+    "achievement_level",
+    "competition_type",
+)
+SHEET_COLUMNS_REPORT_DOCUMENTS = (
+    "report_id",
+    "drive_file_id",
+    "rag_status",
+)
+
 # ChromaDB Settings
 CHROMA_PERSIST_DIR = BASE_DIR / "chroma_db"
 CHROMA_COLLECTION_NAME = "lab_prestasi_evaluations"

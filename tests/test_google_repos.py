@@ -1,12 +1,111 @@
 """
 Unit tests for GoogleSheetsRepo and GoogleDriveRepo using mocks.
-Verifies that only allowed fields pass repo boundaries and raw rows/personal data are not leaked.
+
+The central assertion is the repository boundary (Brief 5.1): only the required
+columns are fetched, PII columns are never requested, and raw rows never reach
+the logs.
 """
 
 from unittest.mock import MagicMock, patch
 import pytest
-from enums import CompetitionType, AchievementLevel, RagStatus
+
+from enums import AchievementLevel, RagStatus
 from ingestion.repos.google import GoogleSheetsRepo, GoogleDriveRepo
+
+
+def column_index(letter: str) -> int:
+    index = 0
+    for char in letter:
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index
+
+
+class FakeWorksheet:
+    """Minimal worksheet double that records exactly which ranges are requested."""
+
+    def __init__(self, title: str, header, rows):
+        self.title = title
+        self._header = header
+        self._rows = rows
+        self.requested_ranges = []
+        self.updated_cells = []
+        self.find_calls = []
+
+    def row_values(self, row_number):
+        assert row_number == 1, "only the header row may be read as a full row"
+        return list(self._header)
+
+    def col_values(self, column_number):
+        return [self._header[column_number - 1]] + [
+            r[column_number - 1] for r in self._rows
+        ]
+
+    def batch_get(self, ranges, value_render_option="FORMATTED_VALUE"):
+        self.requested_ranges = list(ranges)
+        values = []
+        for rng in ranges:
+            start = rng.split(":")[0]
+            column = column_index("".join(ch for ch in start if ch.isalpha()))
+            values.append([r[column - 1] for r in self._rows])
+        return values
+
+    def get_all_records(self, *args, **kwargs):
+        raise AssertionError(
+            "get_all_records() must never be used: it fetches every column, including PII"
+        )
+
+    def find(self, query, in_column=None):
+        self.find_calls.append((query, in_column))
+        for offset, row in enumerate(self._rows):
+            if row[0] == query:
+                cell = MagicMock()
+                cell.row = offset + 2
+                return cell
+        return None
+
+    def update_cell(self, row, column, value):
+        self.updated_cells.append((row, column, value))
+
+
+COMPETITION_HEADER = [
+    "report_id",
+    "reporter_nim",
+    "reporter_name",
+    "reporter_phone",
+    "mentor_name",
+    "team_biodata_file_id",
+    "participant_photo_file_id",
+    "competition_name",
+    "competition_year",
+    "achievement_level",
+    "competition_type",
+    "budget_requested",
+    "budget_request_id",
+    "lpj_file_id",
+    "consent_status",
+    "submitted_at",
+]
+
+COMPETITION_ROWS = [
+    [
+        "RPT0001",
+        "13520001",
+        "Budi Rahasia",
+        "081234567890",
+        "Dosen X",
+        "BIO_1",
+        "FOTO_1",
+        "Lomba Cloud",
+        2024,
+        AchievementLevel.JUARA_1.value,
+        "Business Plan",
+        "No",
+        "",
+        "",
+        "Setuju",
+        "2024-11-15T10:00:00Z",
+    ]
+]
 
 
 @pytest.fixture
@@ -15,80 +114,102 @@ def mock_creds():
         "type": "service_account",
         "project_id": "mock-proj",
         "private_key_id": "key123",
-        "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQD...\n-----END PRIVATE KEY-----\n",
+        "private_key": "-----BEGIN PRIVATE KEY-----\nmock\n-----END PRIVATE KEY-----\n",
         "client_email": "test@mock-proj.iam.gserviceaccount.com",
     }
 
 
-def test_google_sheets_repo_privacy_and_columns(mock_creds):
-    with patch("gspread.authorize") as mock_auth, patch(
+def _build_repo(mock_creds, sheets):
+    repo = GoogleSheetsRepo("sheet123", mock_creds)
+    spreadsheet = MagicMock()
+    spreadsheet.worksheet.side_effect = lambda name: sheets[name]
+    repo._spreadsheet = spreadsheet
+    return repo
+
+
+def test_google_sheets_repo_fetches_only_allowed_columns(mock_creds, caplog):
+    reports_ws = FakeWorksheet("competition_reports", COMPETITION_HEADER, COMPETITION_ROWS)
+    docs_ws = FakeWorksheet(
+        "report_documents",
+        ["report_id", "drive_file_id", "rag_status"],
+        [["RPT0001", "DRV_RPT0001.pdf", RagStatus.BELUM_DIPROSES.value]],
+    )
+
+    with patch("gspread.authorize"), patch(
         "google.oauth2.service_account.Credentials.from_service_account_info"
     ):
-        mock_client = MagicMock()
-        mock_auth.return_value = mock_client
-        mock_spreadsheet = MagicMock()
-        mock_client.open_by_key.return_value = mock_spreadsheet
+        repo = _build_repo(
+            mock_creds,
+            {"competition_reports": reports_ws, "report_documents": docs_ws},
+        )
 
-        # Mock competition_reports worksheet with personal data included
-        ws_reports = MagicMock()
-        ws_reports.get_all_records.return_value = [
-            {
-                "report_id": "RPT0001",
-                "reporter_nim": "13520001",  # Personal
-                "reporter_name": "Budi Rahasia",  # Personal
-                "reporter_phone": "081234567890",  # Personal
-                "mentor_name": "Dosen X",  # Personal
-                "competition_name": "Lomba Cloud",
-                "competition_year": "2024",
-                "achievement_level": AchievementLevel.JUARA_1.value,
-                "competition_type": CompetitionType.BUSINESS_PLAN.value,
-            }
-        ]
+        with caplog.at_level("DEBUG"):
+            reports = repo.get_competition_reports()
+            docs = repo.get_report_documents()
 
-        # Mock report_documents worksheet (strictly 3 columns)
-        ws_docs = MagicMock()
-        ws_docs.get_all_records.return_value = [
-            {
-                "report_id": "RPT0001",
-                "drive_file_id": "DRV_RPT0001",
-                "rag_status": RagStatus.BELUM_DIPROSES.value,
-            }
-        ]
+    # Only the five allowed columns of competition_reports were requested.
+    assert reports_ws.requested_ranges == ["A2:A2", "H2:H2", "I2:I2", "J2:J2", "K2:K2"]
+    # Only the three allowed columns of report_documents were requested.
+    assert docs_ws.requested_ranges == ["A2:A2", "B2:B2", "C2:C2"]
 
-        def get_worksheet(name):
-            if name == "competition_reports":
-                return ws_reports
-            elif name == "report_documents":
-                return ws_docs
-            raise ValueError(f"Unknown worksheet {name}")
+    # PII column letters (B-G) are never requested.
+    pii_letters = {"B", "C", "D", "E", "F", "G"}
+    requested_letters = {
+        "".join(ch for ch in rng.split(":")[0] if ch.isalpha())
+        for rng in reports_ws.requested_ranges
+    }
+    assert requested_letters.isdisjoint(pii_letters)
 
-        mock_spreadsheet.worksheet.side_effect = get_worksheet
+    # Model boundary: only allowed fields reach the pipeline.
+    assert len(reports) == 1
+    r = reports[0]
+    assert r.report_id == "RPT0001"
+    assert str(r.competition_year) == "2024"
+    assert r.achievement_level == AchievementLevel.JUARA_1.value
+    assert not hasattr(r, "reporter_nim")
+    assert not hasattr(r, "reporter_name")
+    assert not hasattr(r, "reporter_phone")
+    assert not hasattr(r, "mentor_name")
 
-        repo = GoogleSheetsRepo("sheet123", mock_creds)
+    assert len(docs) == 1
+    assert docs[0].report_id == "RPT0001"
+    assert docs[0].rag_status == RagStatus.BELUM_DIPROSES
 
-        # Test competition reports
-        reports = repo.get_competition_reports()
-        assert len(reports) == 1
-        r = reports[0]
-        assert r.report_id == "RPT0001"
-        assert r.competition_year == 2024
-        assert not hasattr(r, "reporter_nim")
-        assert not hasattr(r, "reporter_name")
-        assert not hasattr(r, "reporter_phone")
+    # No PII value appears in any log record.
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    for pii in ("13520001", "Budi Rahasia", "081234567890", "Dosen X", "Setuju"):
+        assert pii not in logged
 
-        # Test report documents
-        docs = repo.get_report_documents()
-        assert len(docs) == 1
-        assert docs[0].report_id == "RPT0001"
-        assert docs[0].rag_status == RagStatus.BELUM_DIPROSES
 
-        # Test update rag status
-        mock_cell = MagicMock()
-        mock_cell.row = 2
-        ws_docs.find.return_value = mock_cell
+def test_google_sheets_repo_updates_status_column(mock_creds):
+    docs_ws = FakeWorksheet(
+        "report_documents",
+        ["report_id", "drive_file_id", "rag_status"],
+        [["RPT0001", "DRV_RPT0001.pdf", RagStatus.BELUM_DIPROSES.value]],
+    )
+
+    with patch("gspread.authorize"), patch(
+        "google.oauth2.service_account.Credentials.from_service_account_info"
+    ):
+        repo = _build_repo(mock_creds, {"report_documents": docs_ws})
         ok = repo.update_rag_status("RPT0001", RagStatus.SELESAI)
-        assert ok is True
-        ws_docs.update_cell.assert_called_with(2, 3, "Selesai")
+
+    assert ok is True
+    assert docs_ws.find_calls == [("RPT0001", 1)]
+    assert docs_ws.updated_cells == [(2, 3, RagStatus.SELESAI.value)]
+
+
+def test_google_sheets_repo_rejects_missing_required_column(mock_creds):
+    broken = FakeWorksheet(
+        "report_documents", ["report_id", "drive_file_id"], [["RPT0001", "DRV"]]
+    )
+
+    with patch("gspread.authorize"), patch(
+        "google.oauth2.service_account.Credentials.from_service_account_info"
+    ):
+        repo = _build_repo(mock_creds, {"report_documents": broken})
+        with pytest.raises(ValueError, match="missing required columns"):
+            repo.get_report_documents()
 
 
 def test_google_drive_repo_mocked_calls(mock_creds, tmp_path):
@@ -100,7 +221,6 @@ def test_google_drive_repo_mocked_calls(mock_creds, tmp_path):
 
         drive_repo = GoogleDriveRepo("folder123", mock_creds)
 
-        # Test upload artifact
         mock_file = tmp_path / "test_artifact.zip"
         mock_file.write_text("dummy artifact content")
 

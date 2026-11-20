@@ -77,13 +77,18 @@ def test_local_sheets_repo_privacy_and_filtering(temp_fixtures):
     repo = LocalSheetsRepo(reports_csv, documents_csv)
 
     reports = repo.get_competition_reports()
-    # RPT0002 should be skipped due to invalid enum / year
-    assert len(reports) == 1
+    # The repo returns raw metadata rows; invalid enums are rejected by the
+    # pipeline validator (not silently dropped here), so both rows come back.
+    assert len(reports) == 2
     r = reports[0]
     assert r.report_id == "RPT0001"
-    assert r.competition_year == 2024
+    assert int(r.competition_year) == 2024
     assert r.achievement_level == AchievementLevel.JUARA_1
     assert r.competition_type == CompetitionType.BUSINESS_PLAN
+
+    invalid = {row.report_id: row for row in reports}["RPT0002"]
+    assert invalid.achievement_level == "Juara Khayalan"
+    assert invalid.competition_year == "invalid_year"
     # Verify no PII attributes exist on the model
     assert not hasattr(r, "reporter_nim")
     assert not hasattr(r, "reporter_phone")

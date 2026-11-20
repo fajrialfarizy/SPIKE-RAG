@@ -1,13 +1,18 @@
 """
 Local filesystem and CSV implementation of SheetsRepo and DriveRepo.
 Used for testing, local offline development, and evaluation on dummy data.
+
+CSV reads resolve column indexes from the header first, so only the required
+columns are materialised (same select-at-the-boundary rule as the Google repo).
 """
 
 import csv
 import shutil
 from pathlib import Path
-from typing import List
-from enums import CompetitionType, AchievementLevel, RagStatus
+from typing import Any, Dict, List, Sequence
+
+import config
+from enums import RagStatus
 from ingestion.repos.base import (
     SheetsRepo,
     DriveRepo,
@@ -23,57 +28,80 @@ class LocalSheetsRepo(SheetsRepo):
         self.competition_reports_csv = Path(competition_reports_csv)
         self.report_documents_csv = Path(report_documents_csv)
 
-    def get_report_documents(self) -> List[ReportDocumentRow]:
-        if not self.report_documents_csv.exists():
+    @staticmethod
+    def _read_selected_columns(
+        path: Path, required_columns: Sequence[str]
+    ) -> List[Dict[str, Any]]:
+        """Read only the required columns of a CSV, resolving them from the header."""
+        if not path.exists():
             return []
 
-        rows: List[ReportDocumentRow] = []
-        with open(self.report_documents_csv, mode="r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                # Strip keys and values
-                cleaned = {k.strip(): v.strip() for k, v in row.items() if k}
-                if not cleaned.get("report_id"):
-                    continue
-                rows.append(
-                    ReportDocumentRow(
-                        report_id=cleaned["report_id"],
-                        drive_file_id=cleaned["drive_file_id"],
-                        rag_status=RagStatus(cleaned.get("rag_status", RagStatus.BELUM_DIPROSES.value)),
-                    )
+        with open(path, mode="r", encoding="utf-8", newline="") as f:
+            reader = csv.reader(f)
+            try:
+                header = [cell.strip() for cell in next(reader)]
+            except StopIteration:
+                return []
+
+            missing = [name for name in required_columns if name not in header]
+            if missing:
+                raise ValueError(
+                    f"CSV '{path.name}' is missing required columns: {missing}"
                 )
+
+            indexes = [header.index(name) for name in required_columns]
+            rows: List[Dict[str, Any]] = []
+            for raw in reader:
+                if not raw:
+                    continue
+                row: Dict[str, Any] = {}
+                for name, index in zip(required_columns, indexes):
+                    row[name] = raw[index].strip() if index < len(raw) else ""
+                rows.append(row)
+            return rows
+
+    def get_report_documents(self) -> List[ReportDocumentRow]:
+        rows: List[ReportDocumentRow] = []
+        for cleaned in self._read_selected_columns(
+            self.report_documents_csv, config.SHEET_COLUMNS_REPORT_DOCUMENTS
+        ):
+            if not cleaned.get("report_id"):
+                continue
+            try:
+                status = RagStatus(
+                    cleaned.get("rag_status") or RagStatus.BELUM_DIPROSES.value
+                )
+            except ValueError:
+                status = RagStatus.BELUM_DIPROSES
+
+            rows.append(
+                ReportDocumentRow(
+                    report_id=cleaned["report_id"],
+                    drive_file_id=cleaned.get("drive_file_id", ""),
+                    rag_status=status,
+                )
+            )
         return rows
 
     def get_competition_reports(self) -> List[CompetitionReportMetadata]:
-        if not self.competition_reports_csv.exists():
-            return []
-
+        """Return raw metadata rows; enum/year validation happens in the pipeline."""
         reports: List[CompetitionReportMetadata] = []
-        with open(self.competition_reports_csv, mode="r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                cleaned = {k.strip(): v.strip() for k, v in row.items() if k}
-                report_id = cleaned.get("report_id")
-                if not report_id:
-                    continue
+        for cleaned in self._read_selected_columns(
+            self.competition_reports_csv, config.SHEET_COLUMNS_COMPETITION_REPORTS
+        ):
+            report_id = cleaned.get("report_id")
+            if not report_id:
+                continue
 
-                try:
-                    c_type = CompetitionType(cleaned.get("competition_type", ""))
-                    a_level = AchievementLevel(cleaned.get("achievement_level", ""))
-                    year = int(cleaned.get("competition_year", "0"))
-                except ValueError:
-                    # Skip invalid enum or year parsing errors
-                    continue
-
-                reports.append(
-                    CompetitionReportMetadata(
-                        report_id=report_id,
-                        competition_name=cleaned.get("competition_name", ""),
-                        competition_year=year,
-                        achievement_level=a_level,
-                        competition_type=c_type,
-                    )
+            reports.append(
+                CompetitionReportMetadata(
+                    report_id=report_id,
+                    competition_name=cleaned.get("competition_name", ""),
+                    competition_year=cleaned.get("competition_year", ""),
+                    achievement_level=cleaned.get("achievement_level", ""),
+                    competition_type=cleaned.get("competition_type", ""),
                 )
+            )
         return reports
 
     def update_rag_status(self, report_id: str, new_status: RagStatus) -> bool:
@@ -82,17 +110,22 @@ class LocalSheetsRepo(SheetsRepo):
 
         rows = []
         updated = False
-        with open(self.report_documents_csv, mode="r", encoding="utf-8") as f:
+        with open(self.report_documents_csv, mode="r", encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
-            fieldnames = reader.fieldnames or ["report_id", "drive_file_id", "rag_status"]
+            fieldnames = (
+                reader.fieldnames
+                or list(config.SHEET_COLUMNS_REPORT_DOCUMENTS)
+            )
             for row in reader:
-                if row.get("report_id", "").strip() == report_id:
+                if (row.get("report_id") or "").strip() == report_id:
                     row["rag_status"] = new_status.value
                     updated = True
                 rows.append(row)
 
         if updated:
-            with open(self.report_documents_csv, mode="w", encoding="utf-8", newline="") as f:
+            with open(
+                self.report_documents_csv, mode="w", encoding="utf-8", newline=""
+            ) as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(rows)

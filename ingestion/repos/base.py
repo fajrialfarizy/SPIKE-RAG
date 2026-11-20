@@ -1,24 +1,25 @@
 """
 Repository interfaces and models for Sheets and Drive access.
 Enables clean separation between Google Cloud production APIs and local test mocks.
+
+`CompetitionReportMetadata` intentionally carries raw sheet values: enum and year
+validation belongs to the ingestion validator (Brief 5.2 #3), so a repository
+never silently drops a row that the pipeline must report as "Proses gagal".
 """
 
 from abc import ABC, abstractmethod
-from typing import List, Optional
-from pydantic import BaseModel, Field
-from enums import CompetitionType, AchievementLevel, RagStatus
+from typing import List, Union
+from pydantic import BaseModel
+from enums import RagStatus
 
 
 class CompetitionReportMetadata(BaseModel):
-    """
-    Metadata model containing only the fields allowed for RAG processing (Brief 5.1).
-    All personal data (NIM, name, phone, etc.) are strictly excluded.
-    """
+    """Metadata model containing only the fields allowed for RAG processing (Brief 5.1)."""
     report_id: str
     competition_name: str
-    competition_year: int
-    achievement_level: AchievementLevel
-    competition_type: CompetitionType
+    competition_year: Union[int, str]
+    achievement_level: str
+    competition_type: str
 
 
 class ReportDocumentRow(BaseModel):
