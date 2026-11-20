@@ -25,10 +25,18 @@ def test_report_id_regex():
     assert not pattern.match("REPORT0001")
 
 
-def test_citation_tag_regex():
-    pattern = config.PATTERN_CITATION_TAG
-    matches = pattern.findall("Menurut laporan [S1] dan juga [S23], kendala utama...")
-    assert matches == ["S1", "S23"]
+def test_alias_regex_accepts_every_citation_form():
+    text = "Menurut laporan [LAP1] dan juga (LAP23), plus LAP7."
+    aliases = [match.group("alias") for match in config.PATTERN_ALIAS_SINGLE.finditer(text)]
+    assert aliases == ["LAP1", "LAP23", "LAP7"]
+
+    listed = "[LAP1, LAP2]"
+    assert config.PATTERN_ALIAS_LIST.search(listed)
+    assert config.PATTERN_ALIAS_ANY.findall("[LAP1] [LAP2] LAP3") == [
+        "LAP1",
+        "LAP2",
+        "LAP3",
+    ]
 
 
 def test_pii_patterns():

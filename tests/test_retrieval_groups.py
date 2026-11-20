@@ -216,7 +216,7 @@ def test_the_pipeline_passes_the_group_status_to_the_answer_model():
     ]
     llm = FakeLLM(
         json_responses=[cross_payload("achievement_group")],
-        text_responses=["Tim juara fokus pada validasi pasar [S1], tim finalis pada waktu [S2]."],
+        text_responses=["Tim juara fokus pada validasi pasar [LAP1], tim finalis pada waktu [LAP2]."],
     )
     pipeline = RagPipeline(
         knowledge_base=FilteringKnowledgeBase(matches=matches),
@@ -242,7 +242,7 @@ def test_an_empty_group_reaches_the_answer_prompt_as_a_limitation():
     matches = [match("RPT0001", level="Juara 1")]
     llm = FakeLLM(
         json_responses=[cross_payload("achievement_group")],
-        text_responses=["Hanya tim juara yang tersedia [S1]."],
+        text_responses=["Hanya tim juara yang tersedia [LAP1]."],
     )
     pipeline = RagPipeline(
         knowledge_base=FilteringKnowledgeBase(matches=matches),

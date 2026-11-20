@@ -87,7 +87,7 @@ def test_coffee_grounds_question_retrieves_rpt0002(persist_dir):
     pipeline, _ = build_pipeline(
         persist_dir,
         search_query="pemanfaatan limbah ampas kopi menjadi briket",
-        answer="Kendala utama adalah logistik ampas kopi [S1].",
+        answer="Kendala utama adalah logistik ampas kopi [LAP1].",
     )
 
     result = pipeline.run(
@@ -108,7 +108,7 @@ def test_cross_report_comparison_returns_several_reports(persist_dir):
     pipeline, _ = build_pipeline(
         persist_dir,
         search_query="kendala presentasi dan manajemen waktu kompetisi",
-        answer="Kendala waktu presentasi muncul di beberapa laporan [S1][S2].",
+        answer="Kendala waktu presentasi muncul di beberapa laporan [LAP1][LAP2].",
         mode="cross_report",
     )
 
@@ -123,7 +123,7 @@ def test_catalog_lists_reports_without_embedding(persist_dir):
     pipeline, llm = build_pipeline(
         persist_dir,
         search_query="daftar laporan",
-        answer="Laporan business plan tersedia [S1].",
+        answer="Laporan business plan tersedia [LAP1].",
         mode="catalog",
     )
 
@@ -141,7 +141,7 @@ def test_injection_document_is_passed_as_data_only(persist_dir):
     pipeline, llm = build_pipeline(
         persist_dir,
         search_query="audit keamanan cloud bucket penyimpanan publik perbankan digital",
-        answer="Evaluasi menekankan kesadaran enkripsi data transit [S1].",
+        answer="Evaluasi menekankan kesadaran enkripsi data transit [LAP1].",
     )
 
     result = pipeline.run(
@@ -164,13 +164,13 @@ def test_id_route_reads_the_requested_report(persist_dir):
     pipeline, llm = build_pipeline(
         persist_dir,
         search_query="tidak dipakai",
-        answer="Saran pengembangan berfokus pada validasi rantai pasok [S1].",
+        answer="Saran pengembangan berfokus pada validasi rantai pasok [LAP1].",
     )
 
     result = pipeline.run("Apa saran pengembangan pada RPT0002?")
 
     assert result.status is AnswerStatus.ANSWERED
     assert result.debug.route == "report_id"
-    assert result.debug.alias_map == {"S1": "RPT0002"}
+    assert result.debug.alias_map == {"LAP1": "RPT0002"}
     assert llm.json_call_count == 0
     assert result.debug.retrieved  # chunks were fetched by exact filter

@@ -19,6 +19,8 @@ EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
 EMBEDDING_PASSAGE_PREFIX = "passage: "
 EMBEDDING_QUERY_PREFIX = "query: "
 EMBEDDING_DIMENSION = 384
+# One dummy query at startup so the first real question does not load the model.
+EMBEDDING_WARMUP_QUERY = "pemanasan model embedding"
 
 # LLM Configuration (Groq)
 LLM_MODEL_NAME = "openai/gpt-oss-20b"
@@ -293,6 +295,8 @@ LLM_MAX_CONCURRENT_CALLS = 2
 # the rendered context fits, keeping one chunk per selected report when possible.
 MAX_CONTEXT_TOKENS = 3500
 CONTEXT_TOKEN_ESTIMATOR_CHARS_PER_TOKEN = 2.5
+# Concise-answer target for the addendum (catalog mode excepted).
+ANSWER_TARGET_WORDS = 250
 
 # Analyzer (LLM call #1)
 ANALYZER_MAX_SEARCH_QUERY_CHARS = 300
@@ -411,7 +415,10 @@ RETRIEVAL_LIMITS = {
 }
 
 # Context builder: one alias per unique report, document text wrapped as data.
-CONTEXT_ALIAS_PREFIX = "S"
+# Aliases are LAP1, LAP2, ... (fix pack F4a): S1/S2 collide with Indonesian degree
+# terms and D1-D4 with diploma levels.
+CONTEXT_ALIAS_PREFIX = "LAP"
+CITATION_ALIAS_WORD = "LAP"
 CONTEXT_DOCUMENT_OPEN_TEMPLATE = (
     '<dokumen id={alias} kompetisi="{competition_name}" jenis="{competition_type}" '
     'tahun="{competition_year}" pencapaian="{achievement_level}" '
@@ -426,8 +433,21 @@ CONTEXT_CATALOG_LINE_TEMPLATE = (
     'tahun="{competition_year}" pencapaian="{achievement_level}"'
 )
 
-# Citations (Brief 5.6)
+# Citations (Brief 5.6, fix pack F4b). The model writes [LAP1]; the backend
+# accepts brackets, parentheses, comma lists, adjacent tokens and a bare token.
 CITATION_REPORT_ID_PATTERN = re.compile(r"RPT[0-9]{4,}")
+PATTERN_ALIAS_LIST = re.compile(
+    r"[\[\(]\s*(LAP[0-9]{1,3}(?:\s*[,;/]\s*LAP[0-9]{1,3})+)\s*[\]\)]"
+)
+PATTERN_ALIAS_SINGLE = re.compile(
+    r"(?P<open>[\[\(])?\s*(?P<alias>LAP[0-9]{1,3})\s*(?P<close>[\]\)])?"
+)
+# Safety net: after post-processing no alias token may remain in the answer. It
+# is case-insensitive on purpose: a variant the substitution does not understand
+# must fail loudly instead of reaching the student.
+PATTERN_ALIAS_ANY = re.compile(r"\bLAP[0-9]{1,3}\b", re.IGNORECASE)
+# A competition name this short is too generic to treat as a citation claim.
+CITATION_MENTION_MIN_CHARS = 8
 # Report IDs written by the model, with or without brackets, so they can be
 # validated against the retrieved set and removed when fabricated.
 PATTERN_LLM_REPORT_ID = re.compile(r"\[\s*(RPT[0-9]{4,})\s*\]|(RPT[0-9]{4,})")
@@ -437,6 +457,14 @@ SOURCE_BLOCK_LINE_TEMPLATE = (
     "{achievement_level})"
 )
 SOURCE_BLOCK_SEPARATOR = "\n\n"
+
+# Smoke run pacing (fix pack F1g): Groq's gpt-oss-20b allows ~30 requests per
+# minute, and one question spends up to two requests.
+SMOKE_DEFAULT_DELAY_SECONDS = 20.0
+SMOKE_RETRIEVED_PREVIEW = 5
+
+# Backend answer sanitizer (fix pack F4d): HTML is stripped, Markdown kept.
+SANITIZER_MAX_BLANK_LINES_PATTERN = "\n\n"
 
 # Output guardrails (Brief 5.7)
 # Narrow, targeted detector for requests about personal/administrative data.

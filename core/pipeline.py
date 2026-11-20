@@ -26,7 +26,12 @@ from typing import Any, Dict, List, Optional
 import config
 from core import prompts
 from core.analyzer import Analyzer
-from core.citations import build_source_block, compose_answer, process_citations
+from core.citations import (
+    build_source_block,
+    compose_answer,
+    find_uncited_mentions,
+    process_citations,
+)
 from core.context_builder import ContextBuilder
 from core.deadline import Deadline, DeadlineExceeded
 from core.guardrails import (
@@ -37,6 +42,7 @@ from core.guardrails import (
 from core.llm_client import LLMClient, LLMRateLimitError
 from core.tokens import EstimatorTokenCounter
 from core.retriever import Retriever, RetrievedChunk
+from core.sanitizer import sanitize_answer
 from enums import QueryMode
 from ingestion.embedder import E5Embedder
 
@@ -411,6 +417,10 @@ class RagPipeline:
                     analysis.search_query, analysis.mode, analysis.filters
                 )
 
+            state["embedding_latency_ms"] = getattr(
+                self.retriever, "last_embedding_latency_ms", 0.0
+            )
+
             if not chunks:
                 return result(AnswerStatus.NOT_FOUND, prompts.NOT_FOUND_RESPONSE)
             return self._compose_answer(
@@ -419,6 +429,8 @@ class RagPipeline:
             )
 
         except LLMRateLimitError as exc:
+            if getattr(exc, "is_daily_limit", False):
+                state["incidents"]["daily_limit"] = 1
             logger.warning("chat_failed error_type=%s", type(exc).__name__)
             return result(
                 AnswerStatus.RATE_LIMITED,
@@ -469,13 +481,21 @@ class RagPipeline:
             bundle.text, question, mode, deadline=deadline, hint_extra=hint_extra
         )
         state["calls"].append(completion.to_metrics("answer"))
-        answer_text = completion.content
+        answer_text = sanitize_answer(completion.content)
 
         def resolve(raw_answer: str):
-            return process_citations(raw_answer, bundle.alias_map, retrieved_ids)
+            citations = process_citations(
+                raw_answer, bundle.alias_map, retrieved_ids
+            )
+            missing = find_uncited_mentions(
+                citations.text,
+                citations.cited_report_ids,
+                bundle.report_metadata,
+            )
+            return citations, missing
 
-        citations = resolve(answer_text)
-        if not citations.cited_report_ids:
+        citations, uncited = resolve(answer_text)
+        if not citations.cited_report_ids or uncited:
             # One stricter attempt before giving up (Brief 5.6).
             retry_prompt = (
                 f"{self._answer_user_prompt(bundle.text, question, mode, hint_extra=hint_extra)}"
@@ -491,13 +511,17 @@ class RagPipeline:
                 deadline=deadline,
             )
             state["calls"].append(retry_completion.to_metrics("answer_retry"))
-            answer_text = retry_completion.content
-            citations = resolve(answer_text)
+            answer_text = sanitize_answer(retry_completion.content)
+            citations, uncited = resolve(answer_text)
 
         for key, value in citations.incidents.items():
             state["incidents"][key] = state["incidents"].get(key, 0) + value
 
-        if not citations.cited_report_ids:
+        if uncited:
+            state["incidents"]["uncited_mention"] = len(uncited)
+            logger.info("chat_uncited_report_mentions count=%d", len(uncited))
+
+        if not citations.cited_report_ids or uncited:
             return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
 
         guarded = self.output_guard.apply(citations.text)

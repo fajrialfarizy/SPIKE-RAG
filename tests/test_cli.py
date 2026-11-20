@@ -46,7 +46,7 @@ def fake_pipeline():
                 }
             )
         ],
-        text_responses=["Kendala logistik [S1]."],
+        text_responses=["Kendala logistik [LAP1]."],
     )
     return RagPipeline(knowledge_base=kb, llm=llm, embedder=RecordingEmbedder())
 

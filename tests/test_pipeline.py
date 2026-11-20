@@ -81,7 +81,7 @@ def test_specific_question_is_answered_with_citation_and_source_block():
     pipeline, llm, kb, embedder = build(
         matches=[match()],
         json_responses=[analysis()],
-        text_responses=["Kendala utama adalah logistik ampas kopi [S1]."],
+        text_responses=["Kendala utama adalah logistik ampas kopi [LAP1]."],
     )
 
     result = pipeline.run(QUESTION)
@@ -94,12 +94,12 @@ def test_specific_question_is_answered_with_citation_and_source_block():
         "(Business Plan, 2023, Finalis)" in result.answer
     )
     assert result.cited_report_ids == ["RPT0002"]
-    assert "S1" not in result.answer
+    assert "LAP1" not in result.answer
 
     debug = result.debug
     assert debug.mode == "specific"
     assert debug.route == "semantic"
-    assert debug.alias_map == {"S1": "RPT0002"}
+    assert debug.alias_map == {"LAP1": "RPT0002"}
     assert debug.retrieved[0]["score"] == pytest.approx(0.8)
     assert debug.incidents["unknown_alias"] == 0
 
@@ -121,7 +121,7 @@ def test_filters_are_reported_in_debug_and_applied():
                 }
             )
         ],
-        text_responses=["Kendala [S1]."],
+        text_responses=["Kendala [LAP1]."],
     )
 
     result = pipeline.run(QUESTION)
@@ -145,7 +145,7 @@ def test_cross_report_answer_cites_both_reports():
             match("RPT0003", 0.18, competition_type="Business Case", competition_year=2024),
         ],
         json_responses=[analysis(mode="cross_report")],
-        text_responses=["Kendala A [S1] berbeda dengan kendala B [S2]."],
+        text_responses=["Kendala A [LAP1] berbeda dengan kendala B [LAP2]."],
     )
 
     result = pipeline.run("Bandingkan kendala beberapa tim.")
@@ -160,7 +160,7 @@ def test_catalog_mode_never_embeds_and_lists_reports():
     pipeline, llm, _, embedder = build(
         metadatas=[metadata("RPT0001"), metadata("RPT0003", competition_type="Essay")],
         json_responses=[analysis(mode="catalog", query="daftar jenis kompetisi")],
-        text_responses=["Tersedia laporan Business Plan [S1] dan Essay [S2]."],
+        text_responses=["Tersedia laporan Business Plan [LAP1] dan Essay [LAP2]."],
     )
 
     result = pipeline.run("Apa saja jenis kompetisi yang pernah diikuti?")
@@ -184,7 +184,7 @@ def test_id_route_skips_the_analyzer_entirely():
             )
         ],
         json_responses=[],
-        text_responses=["Evaluasi tim mencakup analisis kuantitatif [S1]."],
+        text_responses=["Evaluasi tim mencakup analisis kuantitatif [LAP1]."],
     )
 
     result = pipeline.run("Jelaskan evaluasi pada RPT0003.")
@@ -271,14 +271,14 @@ def test_zero_citations_triggers_one_stricter_retry():
     pipeline, llm, _, _ = build(
         matches=[match()],
         json_responses=[analysis()],
-        text_responses=["Jawaban tanpa sumber.", "Jawaban dengan sumber [S1]."],
+        text_responses=["Jawaban tanpa sumber.", "Jawaban dengan sumber [LAP1]."],
     )
 
     result = pipeline.run(QUESTION)
 
     assert result.status is AnswerStatus.ANSWERED
     assert llm.text_call_count == 2
-    assert "tidak memuat satu pun alias sitasi" in llm.calls[2]["user_prompt"]
+    assert "tidak memuat sitasi yang valid" in llm.calls[2]["user_prompt"]
     assert result.cited_report_ids == ["RPT0002"]
 
 
@@ -297,16 +297,51 @@ def test_zero_citations_twice_is_no_source():
     assert result.cited_report_ids == []
 
 
-def test_unknown_alias_and_fabricated_id_are_cleaned_and_counted():
-    pipeline, _, _, _ = build(
+def test_a_report_named_without_a_citation_triggers_the_stricter_retry():
+    pipeline, llm, _, _ = build(
         matches=[match()],
         json_responses=[analysis()],
-        text_responses=["Klaim A [S9], klaim B [RPT0007], klaim C [S1]."],
+        text_responses=[
+            "Inovasi Bisnis Mahasiswa Nasional (IBMN) 2023 menunjukkan kendala logistik.",
+            "Kendala logistik muncul pada IBMN 2023 [LAP1].",
+        ],
     )
 
     result = pipeline.run(QUESTION)
 
-    assert "[S9]" not in result.answer
+    assert result.status is AnswerStatus.ANSWERED
+    assert llm.text_call_count == 2
+    assert "[RPT0002]" in result.answer
+
+
+def test_a_report_still_named_without_a_citation_is_no_source():
+    pipeline, llm, _, _ = build(
+        matches=[match()],
+        json_responses=[analysis()],
+        text_responses=[
+            "Inovasi Bisnis Mahasiswa Nasional (IBMN) 2023 menunjukkan kendala logistik.",
+            "Inovasi Bisnis Mahasiswa Nasional (IBMN) 2023 tetap tanpa sitasi.",
+        ],
+    )
+
+    result = pipeline.run(QUESTION)
+
+    assert result.status is AnswerStatus.NO_SOURCE
+    assert result.answer == prompts.NO_SOURCE_RESPONSE
+    assert llm.text_call_count == 2
+    assert result.debug.incidents["uncited_mention"] == 1
+
+
+def test_unknown_alias_and_fabricated_id_are_cleaned_and_counted():
+    pipeline, _, _, _ = build(
+        matches=[match()],
+        json_responses=[analysis()],
+        text_responses=["Klaim A [LAP9], klaim B [RPT0007], klaim C [LAP1]."],
+    )
+
+    result = pipeline.run(QUESTION)
+
+    assert "[LAP9]" not in result.answer
     assert "RPT0007" not in result.answer
     assert "[RPT0002]" in result.answer
     assert result.debug.incidents["unknown_alias"] == 1
@@ -337,7 +372,7 @@ def test_injection_text_stays_inside_the_document_delimiter():
     pipeline, llm, _, _ = build(
         matches=[match("RPT0014", document=injection, competition_type="Business Case")],
         json_responses=[analysis()],
-        text_responses=["Evaluasi menekankan kesadaran enkripsi data transit [S1]."],
+        text_responses=["Evaluasi menekankan kesadaran enkripsi data transit [LAP1]."],
     )
 
     result = pipeline.run("Apa evaluasi tim pada studi kasus keamanan siber?")
@@ -354,7 +389,7 @@ def test_injection_text_stays_inside_the_document_delimiter():
 
 def test_prompt_leak_answer_is_replaced_with_refusal():
     # A valid citation keeps the retry path out of this test.
-    leaked = " ".join(prompts.PRD_9_1_SYSTEM_PROMPT.split()[:45]) + " [S1]"
+    leaked = " ".join(prompts.PRD_9_1_SYSTEM_PROMPT.split()[:45]) + " [LAP1]"
     pipeline, _, _, _ = build(
         matches=[match()],
         json_responses=[analysis()],
@@ -373,7 +408,7 @@ def test_answer_pii_is_masked_and_source_block_survives():
         matches=[match()],
         json_responses=[analysis()],
         text_responses=[
-            "Ketua tim Ahmad Fauzi (NIM: 13520099) menghubungi mentor [S1]."
+            "Ketua tim Ahmad Fauzi (NIM: 13520099) menghubungi mentor [LAP1]."
         ],
     )
 
@@ -390,7 +425,7 @@ def test_debug_data_is_never_part_of_the_user_answer():
     pipeline, _, _, _ = build(
         matches=[match()],
         json_responses=[analysis()],
-        text_responses=["Jawaban [S1]."],
+        text_responses=["Jawaban [LAP1]."],
     )
 
     result = pipeline.run(QUESTION)
@@ -403,7 +438,7 @@ def test_question_and_answer_never_reach_the_log(caplog):
     pipeline, _, _, _ = build(
         matches=[match()],
         json_responses=[analysis()],
-        text_responses=["Jawaban rahasia [S1]."],
+        text_responses=["Jawaban rahasia [LAP1]."],
     )
 
     with caplog.at_level(logging.INFO, logger="core_pipeline"):
@@ -420,7 +455,7 @@ def test_long_question_is_truncated_and_flagged():
     pipeline, llm, _, _ = build(
         matches=[match()],
         json_responses=[analysis()],
-        text_responses=["Jawaban [S1]."],
+        text_responses=["Jawaban [LAP1]."],
     )
 
     result = pipeline.run("kata " * 400)

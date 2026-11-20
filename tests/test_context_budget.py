@@ -109,7 +109,7 @@ def test_the_pipeline_reports_dropped_chunks_in_the_debug_object():
             json_responses=[
                 '{"in_scope": true, "mode": "specific", "search_query": "x", "filters": {}}'
             ],
-            text_responses=["Kendala utama adalah logistik [S1]."],
+            text_responses=["Kendala utama adalah logistik [LAP1]."],
         ),
         embedder=RecordingEmbedder(),
         token_counter=WordCountTokenizer(),
