@@ -53,7 +53,10 @@ class E5Embedder:
             ) from exc
 
     def _check_model_dimension(self):
-        getter = getattr(self._model, "get_sentence_embedding_dimension", None)
+        # sentence-transformers 6.x renames the accessor; support both spellings.
+        getter = getattr(self._model, "get_embedding_dimension", None) or getattr(
+            self._model, "get_sentence_embedding_dimension", None
+        )
         if getter is None:
             return
         dimension = getter()
