@@ -81,7 +81,8 @@ def test_year_strings_are_cast_to_int_and_deduplicated():
 
 def test_empty_filters_are_omitted_entirely():
     result = validate_analysis(
-        valid_payload(filters={"competition_type": [], "competition_year": []}), QUESTION
+        valid_payload(filters={"competition_type": [], "competition_year": []}),
+        "Apa kendala yang dihadapi tim?",
     )
 
     assert result.filters == {}
@@ -131,9 +132,12 @@ def test_out_of_scope_flag_is_preserved():
 
 
 def test_filters_that_are_not_a_dict_are_dropped():
-    result = validate_analysis(valid_payload(filters=["Business Plan"]), QUESTION)
+    result = validate_analysis(
+        valid_payload(filters=["Business Plan"]), "Apa kendala yang dihadapi tim?"
+    )
 
     assert result.filters == {}
+    assert "filters:not_an_object" in result.dropped_reasons
 
 
 def test_parse_handles_fenced_json_and_surrounding_text():

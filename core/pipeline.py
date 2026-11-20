@@ -344,6 +344,18 @@ class RagPipeline:
             state["mode"] = analysis.mode.value
             state["filters"] = analysis.filters
             state["used_fallback"] = analysis.used_fallback
+            state["analyzer"] = {
+                "raw_output": analysis.raw_output,
+                "payload": analysis.payload,
+                "filters_before_validation": analysis.filters_before_validation,
+                "filters": analysis.filters,
+                "dropped_reasons": analysis.dropped_reasons,
+                "deterministic_filters": analysis.deterministic_filters,
+                "used_fallback": analysis.used_fallback,
+                "error_type": analysis.error_type,
+                "latency_ms": analysis.latency_ms,
+                "usage": analysis.usage,
+            }
             state["calls"].append(
                 {
                     "name": "analyzer",

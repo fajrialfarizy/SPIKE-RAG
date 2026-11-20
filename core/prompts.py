@@ -187,9 +187,37 @@ Aturan penilaian:
    achievement_level hanya boleh berisi: "Juara 1", "Juara 2", "Juara 3",
    "Juara Harapan", "Most Aspiring dan penghargaan serupa", "Finalis".
    competition_year hanya boleh berisi tahun empat digit.
-5. Ungkapan "juara" atau "menang" berarti kelompok peraih penghargaan, yaitu lima
-   nilai achievement_level pertama. Ungkapan "belum juara" berarti "Finalis".
+5. Pertanyaan perbandingan tidak boleh mengisi achievement_level maupun
+   competition_type, walaupun pertanyaannya menyebut "juara", "belum juara", atau
+   nama jenis kompetisi. Isi filters hanya untuk pertanyaan yang meminta pengalaman,
+   kendala, atau rekomendasi pada satu batasan tertentu.
 6. Jangan pernah menambahkan kunci lain.
+
+Contoh:
+
+Pertanyaan: "Apa saja pengalaman tim pada kompetisi business plan?"
+Jawaban: {"in_scope": true, "mode": "specific", "search_query": "pengalaman tim kompetisi business plan", "filters": {"competition_type": ["Business Plan"], "competition_year": [], "achievement_level": []}}
+
+Pertanyaan: "Apakah ada pengalaman tim dalam business case bertema fintech?"
+Jawaban: {"in_scope": true, "mode": "specific", "search_query": "pengalaman tim business case fintech", "filters": {"competition_type": ["Business Case"], "competition_year": [], "achievement_level": []}}
+
+Pertanyaan: "Apa kendala tim pada kompetisi tahun 2023?"
+Jawaban: {"in_scope": true, "mode": "specific", "search_query": "kendala tim kompetisi tahun 2023", "filters": {"competition_type": [], "competition_year": [2023], "achievement_level": []}}
+
+Pertanyaan: "Apa rekomendasi untuk tim yang belum juara pada business plan?"
+Jawaban: {"in_scope": true, "mode": "specific", "search_query": "rekomendasi tim finalis business plan", "filters": {"competition_type": ["Business Plan"], "competition_year": [], "achievement_level": ["Finalis"]}}
+
+Pertanyaan: "Bandingkan pembelajaran tim yang juara dan yang belum juara."
+Jawaban: {"in_scope": true, "mode": "cross_report", "search_query": "perbandingan pembelajaran tim juara dan finalis", "filters": {"competition_type": [], "competition_year": [], "achievement_level": []}}
+
+Pertanyaan: "Bandingkan pengalaman tim pada business plan dan business case."
+Jawaban: {"in_scope": true, "mode": "cross_report", "search_query": "perbandingan pengalaman business plan dan business case", "filters": {"competition_type": [], "competition_year": [], "achievement_level": []}}
+
+Pertanyaan: "Apa saja laporan kompetisi yang tersedia?"
+Jawaban: {"in_scope": true, "mode": "catalog", "search_query": "daftar laporan kompetisi tersedia", "filters": {"competition_type": [], "competition_year": [], "achievement_level": []}}
+
+Pertanyaan: "Siapa presiden Indonesia saat ini?"
+Jawaban: {"in_scope": false, "mode": "specific", "search_query": "presiden indonesia", "filters": {"competition_type": [], "competition_year": [], "achievement_level": []}}
 """
 
 ANALYZER_USER_TEMPLATE = """<pertanyaan>

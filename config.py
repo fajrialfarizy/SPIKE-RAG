@@ -301,6 +301,77 @@ ANALYZER_MAX_QUESTION_CHARS = CHAT_MAX_INPUT_CHARS
 ANALYZER_YEAR_MIN = 2000
 ANALYZER_YEAR_MAX = 2100
 
+# Analyzer normalization (fix pack F2b). Keys are matched case-insensitively and
+# ignoring punctuation and repeated whitespace; values are the canonical enums.
+ANALYZER_COMPETITION_TYPE_SYNONYMS = {
+    "business plan": "Business Plan",
+    "businessplan": "Business Plan",
+    "rencana bisnis": "Business Plan",
+    "bp": "Business Plan",
+    "business case": "Business Case",
+    "businesscase": "Business Case",
+    "studi kasus": "Business Case",
+    "case": "Business Case",
+    "essay": "Essay",
+    "esai": "Essay",
+    "esei": "Essay",
+    "karya tulis ilmiah": "Karya Tulis Ilmiah",
+    "karya tulis": "Karya Tulis Ilmiah",
+    "kti": "Karya Tulis Ilmiah",
+}
+ANALYZER_ACHIEVEMENT_LEVEL_SYNONYMS = {
+    "juara 1": "Juara 1",
+    "juara i": "Juara 1",
+    "juara pertama": "Juara 1",
+    "juara ke 1": "Juara 1",
+    "peringkat 1": "Juara 1",
+    "juara 2": "Juara 2",
+    "juara ii": "Juara 2",
+    "juara kedua": "Juara 2",
+    "juara ke 2": "Juara 2",
+    "peringkat 2": "Juara 2",
+    "runner up": "Juara 2",
+    "juara 3": "Juara 3",
+    "juara iii": "Juara 3",
+    "juara ketiga": "Juara 3",
+    "juara ke 3": "Juara 3",
+    "peringkat 3": "Juara 3",
+    "juara harapan": "Juara Harapan",
+    "harapan": "Juara Harapan",
+    "most aspiring": "Most Aspiring dan penghargaan serupa",
+    "most aspiring dan penghargaan serupa": "Most Aspiring dan penghargaan serupa",
+    "penghargaan serupa": "Most Aspiring dan penghargaan serupa",
+    "finalis": "Finalis",
+    "finalist": "Finalis",
+    "belum juara": "Finalis",
+    "non juara": "Finalis",
+}
+
+# Deterministic extractor (fix pack F2c): explicit type keywords in the question.
+ANALYZER_TYPE_KEYWORDS = {
+    "business plan": "Business Plan",
+    "rencana bisnis": "Business Plan",
+    "bp": "Business Plan",
+    "business case": "Business Case",
+    "studi kasus": "Business Case",
+    "case": "Business Case",
+    "essay": "Essay",
+    "esai": "Essay",
+    "karya tulis ilmiah": "Karya Tulis Ilmiah",
+    "karya tulis": "Karya Tulis Ilmiah",
+    "kti": "Karya Tulis Ilmiah",
+}
+# A four-digit year standing on its own, never part of a longer number.
+PATTERN_ANALYZER_YEAR = re.compile(r"(?<![\d.])(20[0-9]{2})(?![\d.])")
+ANALYZER_YEAR_MONEY_WINDOW = 24
+PATTERN_ANALYZER_MONEY_PREFIX = re.compile(
+    r"(?i)(?:rp|idr|usd|\$|biaya|dana|anggaran|hadiah|nominal|sebesar|senilai)"
+    r"[^0-9]{0,8}$"
+)
+PATTERN_ANALYZER_MONEY_SUFFIX = re.compile(
+    r"(?i)^\s*(?:juta|ribu|miliar|milyar|jt|rb|million)\b"
+)
+
 # Retrieval limits per mode: k chunks returned, max chunks per report.
 RETRIEVAL_LIMITS = {
     "specific": {
