@@ -306,6 +306,9 @@ CONTEXT_CATALOG_LINE_TEMPLATE = (
 
 # Citations (Brief 5.6)
 CITATION_REPORT_ID_PATTERN = re.compile(r"RPT[0-9]{4,}")
+# Report IDs written by the model, with or without brackets, so they can be
+# validated against the retrieved set and removed when fabricated.
+PATTERN_LLM_REPORT_ID = re.compile(r"\[\s*(RPT[0-9]{4,})\s*\]|(RPT[0-9]{4,})")
 SOURCE_BLOCK_TITLE = "**Sumber**"
 SOURCE_BLOCK_LINE_TEMPLATE = (
     "- {report_id} — {competition_name} ({competition_type}, {competition_year}, "
