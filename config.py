@@ -218,9 +218,17 @@ PATTERN_PAGE_NUMBER = re.compile(
     re.MULTILINE,
 )
 # Lines in the first/last N lines of a page that repeat on most pages are margins.
-REPEATED_MARGIN_LINES = 3
+REPEATED_MARGIN_LINES = 2
 REPEATED_MARGIN_RATIO = 0.6
 REPEATED_MARGIN_MIN_PAGES = 2
+# Running headers/footers are short. The cap prevents deleting repeated body text.
+REPEATED_MARGIN_MAX_CHARS = 80
+
+# Run logging (Brief 5.2 #11)
+# Logs carry operational metadata only: never raw rows, credentials or document text.
+LOG_DIR = BASE_DIR / "logs"
+LOG_LEVEL = "INFO"
+LOG_FILE_PREFIX = "ingestion"
 
 # Authentication Settings
 AUTH_MAX_FAILED_ATTEMPTS = 5

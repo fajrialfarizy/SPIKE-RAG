@@ -65,8 +65,10 @@ class PDFParser:
         repeated = {
             line
             for line, count in counts.items()
-            if count >= threshold and len(line) > 3
+            if count >= threshold
+            and 3 < len(line) <= config.REPEATED_MARGIN_MAX_CHARS
         }
+        # Never drop a section heading, even if it looks like a running header.
         return {line for line in repeated if not cls.is_heading(line)}
 
     def extract_and_clean_text(self, pdf_path: Path) -> str:

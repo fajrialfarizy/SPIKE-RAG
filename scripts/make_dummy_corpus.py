@@ -144,7 +144,14 @@ def generate_corpus():
                     "Namun, tim sempat mengalami dinamika internal terkait arsitektur cloud server yang aman bagi data rekam medis pasien lansia sesuai standar regulasi perlindungan data pribadi medis. "
                     "Evaluasi teknis menunjukkan perlunya enkripsi end-to-end pada setiap transmisi data telemetri dari timbangan pintar menuju dashboard pengasuh di panti wreda. "
                     "Selain itu, kami menyadari bahwa alokasi waktu untuk presentasi 10 menit terasa sangat padat karena banyaknya fitur produk yang ingin didemonstrasikan kepada para panelis juri. "
-                    "Secara keseluruhan, koordinasi internal tim berjalan harmonis berkat komitmen harian evaluasi sprint singkat setiap malam selama persiapan final."
+                    "Secara keseluruhan, koordinasi internal tim berjalan harmonis berkat komitmen harian evaluasi sprint singkat setiap malam selama persiapan final. "
+                    "Selama masa persiapan, tim melakukan uji coba terbatas terhadap dua puluh lima keluarga pengguna awal untuk mengukur penerimaan antarmuka aplikasi. "
+                    "Hasilnya menunjukkan bahwa pengguna lanjut usia membutuhkan alur pendaftaran yang lebih sederhana, teks berukuran besar, serta panduan suara berbahasa Indonesia. "
+                    "Masukan tersebut mendorong tim merevisi desain pada minggu ketiga dan menambah mode aksesibilitas satu ketukan. "
+                    "Proses rekruitmen narasumber ahli gizi juga memakan waktu lebih lama dari perkiraan karena padatnya jadwal praktik di rumah sakit mitra. "
+                    "Tim akhirnya melibatkan dua mahasiswa gizi sebagai konsultan internal untuk memvalidasi konten rekomendasi nutrisi dan ambang batas peringatan asupan harian. "
+                    "Dari sisi teknis, pengujian akurasi pengenalan porsi makanan dilakukan pada seratus citra hidangan lokal dengan hasil akurasi rata-rata delapan puluh tiga persen, dan tim mencatat bahwa pencahayaan rendah masih menjadi sumber galat utama. "
+                    "Keterbatasan waktu presentasi membuat tim harus memilih dua dari lima fitur unggulan untuk ditampilkan, sehingga diskusi mengenai integrasi rekam medis elektronik hanya disampaikan pada sesi tanya jawab."
                 ),
                 "saran_pengembangan": (
                     "1. Tim berikutnya disarankan menyusun analisis sensitivitas keuangan lebih detail sebelum presentasi, terutama jika biaya cloud server meningkat.\n"
@@ -207,7 +214,13 @@ def generate_corpus():
                     "Penyampaian presentasi dalam bahasa Inggris berlangsung lancar berkat pembagian lead speaker yang tepat sesuai keahlian teknis masing-masing anggota tim. "
                     "Meskipun demikian, kami terlambat menyadari bahwa koneksi internet di ruang karantina sempat mengalami penurunan kecepatan saat proses rendering video animasi studi kasus konsumen. "
                     "Hal ini menyebabkan pengiriman file presentasi final hanya berjarak 7 menit sebelum batas penutupan portal resmi panitia tantangan bisnis ASEAN. "
-                    "Kerjasama tim tetap terjaga secara suportif karena kami menerapkan protokol istirahat bergantian dan saling mereview kalkulasi margin EBITDA sebelum difinalisasi ke dalam slide paparan."
+                    "Kerjasama tim tetap terjaga secara suportif karena kami menerapkan protokol istirahat bergantian dan saling mereview kalkulasi margin EBITDA sebelum difinalisasi ke dalam slide paparan. "
+                    "Selama masa karantina, tim membagi pekerjaan menjadi tiga alur paralel: riset pasar, pemodelan finansial, dan penyusunan narasi presentasi. "
+                    "Pembagian ini membantu tim menyelesaikan draf pertama dalam sepuluh jam pertama, meskipun koordinasi antaralur sempat terganggu karena perbedaan pemahaman mengenai definisi kanal penjualan mikro. "
+                    "Perdebatan tersebut diselesaikan dengan menyusun kamus istilah internal dan memetakan setiap kanal terhadap metrik biaya akuisisi serta kontribusi margin. "
+                    "Tim juga melakukan wawancara singkat dengan dua praktisi ritel untuk menguji asumsi perilaku konsumen pascapandemi, dan hasilnya mengoreksi proyeksi pertumbuhan kanal digital dari dua puluh dua persen menjadi tujuh belas persen. "
+                    "Pada malam terakhir, fokus tim bergeser ke penajaman rekomendasi agar dapat dieksekusi dalam dua belas bulan pertama, termasuk menyusun peta jalan tiga fase dan indikator keberhasilan per kuartal. "
+                    "Kelelahan fisik tetap menjadi kendala utama, terlihat dari dua kali kesalahan penulisan angka pada slide ringkasan eksekutif yang baru terdeteksi saat gladi resik."
                 ),
                 "saran_pengembangan": (
                     "1. Manajemen stamina pada hackathon 24 jam wajib direncanakan: terapkan pembagian shift tidur 2 jam per anggota secara bergantian.\n"
@@ -413,7 +426,13 @@ def generate_corpus():
                     "Sesi Q&A dengan juri dewan direksi BUMN logistik berlangsung sangat memuaskan karena semua data pendukung telah diantisipasi di appendix secara terstruktur dan mudah diakses. "
                     "Kendala kecil yang sempat muncul adalah perbedaan orientasi strategi ekspansi cold storage antara pilar sewa gudang modular versus pembangunan fasilitas hub pendingin mandiri. "
                     "Perbedaan pandangan tersebut berhasil diselesaikan melalui pemodelan komparasi Net Present Value (NPV) multi-skenario yang membuktikan keunggulan skema modular asset-light. "
-                    "Penguasaan materi studi kasus oleh seluruh anggota tim terbukti sangat merata sehingga tidak ada anggota yang pasif saat menjawab sanggahan kritis para juri."
+                    "Penguasaan materi studi kasus oleh seluruh anggota tim terbukti sangat merata sehingga tidak ada anggota yang pasif saat menjawab sanggahan kritis para juri. "
+                    "Pada tahap akhir, tim menjalankan dua sesi simulasi tekanan berdurasi terbatas untuk menguji ketahanan argumentasi terhadap pertanyaan kontradiktif dewan juri. "
+                    "Sesi pertama mengungkap kelemahan pada penjelasan asumsi tingkat susut hasil panen, yang kemudian diperbaiki dengan menambahkan rentang sensitivitas dan skenario konservatif. "
+                    "Sesi kedua berfokus pada narasi dampak sosial, khususnya mekanisme bagi hasil antara operator micro-hub dan koperasi petani, sehingga tim menyiapkan diagram alur pembagian nilai yang sederhana. "
+                    "Tim juga menyimpan seluruh perhitungan pada satu berkas sumber agar setiap angka pada slide dapat ditelusuri kembali dalam hitungan detik saat sesi tanya jawab. "
+                    "Sebagai penutup, tim menyiapkan dokumen serah terima berisi daftar asumsi, sumber data eksternal, dan batasan model agar rekomendasi dapat diuji ulang oleh tim berikutnya. "
+                    "Seluruh berkas kerja diarsipkan dalam satu folder bersama dengan catatan versi, sehingga proses audit internal dapat dilakukan tanpa menghubungi anggota tim satu per satu."
                 ),
                 "saran_pengembangan": (
                     "1. Lakukan gladi resik presentasi minimal 3 kali dengan simulasi kendala teknis (misal mic mati atau slide macet).\n"
@@ -468,7 +487,11 @@ def generate_corpus():
                 # Evaluasi Tim exceeds 3,000 characters limit (Brief 5.2 #7: should warn in log, not fail)
                 "evaluasi_tim": (
                     "Evaluasi komprehensif implementasi telemetri lingkungan hidup terpadu. "
-                    + ("Paragraf analisis kendala teknis transmisi gelombang radio pada cuaca ekstrem basah dan rimbun pepohonan. " * 45)
+                    + " ".join(
+                        f"Paragraf {index + 1} menganalisis kendala teknis transmisi gelombang radio "
+                        "pada cuaca ekstrem basah dan rimbun pepohonan."
+                        for index in range(45)
+                    )
                 ),
                 "saran_pengembangan": "Disarankan menambah stasiun relay repeater pada titik blind spot topografi perbukitan.",
             },
