@@ -120,6 +120,14 @@ NO_SOURCE_RESPONSE = (
     "sumber. Coba ubah pertanyaanmu."
 )
 
+# PRD 9.1 requires refusing prompt disclosure but defines no text for it.
+# Proposed text, pending supervisor approval.
+PROMPT_LEAK_REFUSAL_RESPONSE = (
+    "Maaf, saya tidak dapat menampilkan system prompt atau konfigurasi internal "
+    "chatbot. Silakan ajukan pertanyaan tentang pengalaman, evaluasi, atau "
+    "pembelajaran kompetisi Lab Prestasi."
+)
+
 # PRD 9.1 defines no privacy refusal text. Proposed text, pending supervisor
 # approval; it stays inside the PRD tone and never confirms what data exists.
 PRIVACY_REFUSAL_RESPONSE = (
