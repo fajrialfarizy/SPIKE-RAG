@@ -137,15 +137,20 @@ def generate_corpus():
                     "Dalam kompetisi NBPC 2024, solusi ini dinilai memiliki kejelasan market sizing (TAM-SAM-SOM) dan traction awal yang valid."
                 ),
                 "evaluasi_tim": (
-                    "Persiapan proposal memakan waktu 4 minggu dengan penekanan kuat pada validasi masalah melalui wawancara mendalam terhadap 35 keluarga lansia. "
-                    "Kendala utama tim terjadi pada simulasi proyeksi keuangan unit economics (CAC dan LTV) yang sempat dipertanyakan juri di babak semifinal. "
-                    "Kekompakan tim sangat baik karena pembagian peran jelas: satu anggota fokus pada teknologi dan validasi teknis, satu pada validasi pasar, dan satu pada pemodelan finansial. "
-                    "Saat presentasi final, alat peraga prototype UI/UX interaktif berhasil memikat juri dan membuktikan kesiapan eksekusi produk."
+                    "Persiapan proposal memakan waktu 4 minggu dengan penekanan kuat pada validasi masalah melalui wawancara mendalam terhadap 35 keluarga lansia di wilayah Jabodetabek. "
+                    "Kendala utama tim terjadi pada simulasi proyeksi keuangan unit economics (CAC dan LTV) yang sempat dipertanyakan juri di babak semifinal kompetisi nasional. "
+                    "Kekompakan tim sangat baik karena pembagian peran jelas: satu anggota fokus pada teknologi dan validasi teknis algoritma kecerdasan buatan, satu pada validasi pasar dan wawancara pengguna, dan satu pada pemodelan finansial serta proyeksi arus kas. "
+                    "Saat presentasi final, alat peraga prototype UI/UX interaktif berhasil memikat juri dan membuktikan kesiapan eksekusi produk di lapangan secara nyata. "
+                    "Namun, tim sempat mengalami dinamika internal terkait arsitektur cloud server yang aman bagi data rekam medis pasien lansia sesuai standar regulasi perlindungan data pribadi medis. "
+                    "Evaluasi teknis menunjukkan perlunya enkripsi end-to-end pada setiap transmisi data telemetri dari timbangan pintar menuju dashboard pengasuh di panti wreda. "
+                    "Selain itu, kami menyadari bahwa alokasi waktu untuk presentasi 10 menit terasa sangat padat karena banyaknya fitur produk yang ingin didemonstrasikan kepada para panelis juri. "
+                    "Secara keseluruhan, koordinasi internal tim berjalan harmonis berkat komitmen harian evaluasi sprint singkat setiap malam selama persiapan final."
                 ),
                 "saran_pengembangan": (
                     "1. Tim berikutnya disarankan menyusun analisis sensitivitas keuangan lebih detail sebelum presentasi, terutama jika biaya cloud server meningkat.\n"
                     "2. Perluas kerjasama uji klinis awal atau surat dukungan (LoI) dari komunitas kesehatan untuk memperkuat kredibilitas medis produk.\n"
-                    "3. Latihan tanya jawab (Q&A drill) dengan dosen pembimbing atau mentor alumni sebaiknya dilakukan minimal 5 sesi untuk mengantisipasi pertanyaan tajam."
+                    "3. Latihan tanya jawab (Q&A drill) dengan dosen pembimbing atau mentor alumni sebaiknya dilakukan minimal 5 sesi untuk mengantisipasi pertanyaan tajam.\n"
+                    "Sebagai catatan transparansi alokasi, anggaran dana operasional pilot project disetujui sebesar Rp 25.000.000 (nominal dana: 25000000) dari hibah riset kementerian."
                 ),
             },
         },
@@ -196,10 +201,13 @@ def generate_corpus():
                     "Implementasi terencana selama 18 bulan diproyeksikan mendongkrak margin EBITDA sebesar 3.4% dan memangkas waktu pengiriman 35%."
                 ),
                 "evaluasi_tim": (
-                    "Tim sangat solid dalam pemanfaatan framework MECE dan piramid Minto saat menyusun struktur slide PowerPoint. "
-                    "Kendala utama adalah keterbatasan waktu 24 jam (lock-in case solving) yang memicu kelelahan fisik ekstrem dan perdebatan internal di jam ke-12. "
-                    "Analisis kuantitatif finansial sangat diapresiasi oleh juri McKinsey dan BCG karena model data Excel yang transparan dan minim asumsi spekulatif. "
-                    "Penyampaian presentasi dalam bahasa Inggris berlangsung lancar berkat pembagian lead speaker yang tepat."
+                    "Tim sangat solid dalam pemanfaatan framework MECE dan piramid Minto saat menyusun struktur slide PowerPoint untuk dewan juri internasional. "
+                    "Kendala utama adalah keterbatasan waktu 24 jam (lock-in case solving) yang memicu kelelahan fisik ekstrem dan perdebatan internal di jam ke-12 terkait pemilihan target akuisisi channel retail. "
+                    "Analisis kuantitatif finansial sangat diapresiasi oleh juri McKinsey dan BCG karena model data Excel yang transparan, formula dinamis, dan minim asumsi spekulatif yang tidak berdasar. "
+                    "Penyampaian presentasi dalam bahasa Inggris berlangsung lancar berkat pembagian lead speaker yang tepat sesuai keahlian teknis masing-masing anggota tim. "
+                    "Meskipun demikian, kami terlambat menyadari bahwa koneksi internet di ruang karantina sempat mengalami penurunan kecepatan saat proses rendering video animasi studi kasus konsumen. "
+                    "Hal ini menyebabkan pengiriman file presentasi final hanya berjarak 7 menit sebelum batas penutupan portal resmi panitia tantangan bisnis ASEAN. "
+                    "Kerjasama tim tetap terjaga secara suportif karena kami menerapkan protokol istirahat bergantian dan saling mereview kalkulasi margin EBITDA sebelum difinalisasi ke dalam slide paparan."
                 ),
                 "saran_pengembangan": (
                     "1. Manajemen stamina pada hackathon 24 jam wajib direncanakan: terapkan pembagian shift tidur 2 jam per anggota secara bergantian.\n"
@@ -399,10 +407,13 @@ def generate_corpus():
                     "Studi kelayakan finansial menunjukkan ROI tercapai dalam kurun waktu 2.8 tahun dengan kenaikan pendapatan petani mitra sebesar 28%."
                 ),
                 "evaluasi_tim": (
-                    "Kerjasama tim berada pada level terbaik sepanjang sejarah keikutsertaan kompetisi berkat pembagian kerja yang presisi. "
-                    "Sesi deep dive analitik data berhasil mengungkap inefisiensi tersembunyi pada proses transfer barang di gudang perantara. "
-                    "Slide deck diselesaikan 4 jam sebelum deadline sehingga tim memiliki waktu 3 jam penuh untuk gladi resik presentasi. "
-                    "Sesi Q&A dengan juri dewan direksi BUMN logistik berlangsung sangat memuaskan karena semua data pendukung telah diantisipasi di appendix."
+                    "Kerjasama tim berada pada level terbaik sepanjang sejarah keikutsertaan kompetisi berkat pembagian kerja yang presisi dan pembagian beban analisis yang seimbang. "
+                    "Sesi deep dive analitik data berhasil mengungkap inefisiensi tersembunyi pada proses transfer barang di gudang perantara logistik hasil panen sayuran segar petani dataran tinggi. "
+                    "Slide deck diselesaikan 4 jam sebelum deadline sehingga tim memiliki waktu 3 jam penuh untuk gladi resik presentasi serta simulasi pertanyaan jebakan dari dewan juri pakar logistik. "
+                    "Sesi Q&A dengan juri dewan direksi BUMN logistik berlangsung sangat memuaskan karena semua data pendukung telah diantisipasi di appendix secara terstruktur dan mudah diakses. "
+                    "Kendala kecil yang sempat muncul adalah perbedaan orientasi strategi ekspansi cold storage antara pilar sewa gudang modular versus pembangunan fasilitas hub pendingin mandiri. "
+                    "Perbedaan pandangan tersebut berhasil diselesaikan melalui pemodelan komparasi Net Present Value (NPV) multi-skenario yang membuktikan keunggulan skema modular asset-light. "
+                    "Penguasaan materi studi kasus oleh seluruh anggota tim terbukti sangat merata sehingga tidak ada anggota yang pasif saat menjawab sanggahan kritis para juri."
                 ),
                 "saran_pengembangan": (
                     "1. Lakukan gladi resik presentasi minimal 3 kali dengan simulasi kendala teknis (misal mic mati atau slide macet).\n"
@@ -585,6 +596,7 @@ def generate_corpus():
         })
 
     # Write report_documents.csv (Strictly 3 columns from PRD 5.1 & Brief 3)
+    # Perbaikan Supervisor: Masukkan RPT0099 (tipe Lainnya) ke report_documents agar aturan "lewati + peringatan" teruji
     fieldnames_documents = ["report_id", "drive_file_id", "rag_status"]
     with open(report_documents_path, mode="w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames_documents)
@@ -595,6 +607,12 @@ def generate_corpus():
                 "drive_file_id": item["drive_file_id"],
                 "rag_status": item["rag_status"],
             })
+        # Entri uji tipe Lainnya di report_documents
+        writer.writerow({
+            "report_id": extra_lainnya_report["report_id"],
+            "drive_file_id": "DRV_RPT0099_LAINNYA",
+            "rag_status": RagStatus.BELUM_DIPROSES.value,
+        })
 
     # Generate PDF documents in data/dummy_pdfs/
     for item in reports_data:

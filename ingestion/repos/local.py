@@ -110,12 +110,14 @@ class LocalDriveRepo(DriveRepo):
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     def download_pdf(self, file_id: str, destination_path: str) -> bool:
-        # Search for file_id or file_id.pdf in local_pdf_dir
+        # Exact file matching per Supervisor feedback (Brief 5.1 & local repo specs)
+        # file_id in Google Drive maps to the stored filename or file_id in local storage
         candidate = self.local_pdf_dir / file_id
         if not candidate.exists() and not file_id.endswith(".pdf"):
             candidate = self.local_pdf_dir / f"{file_id}.pdf"
 
-        if candidate.exists():
+        # Check candidate exact existence
+        if candidate.is_file():
             dest = Path(destination_path)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(candidate, dest)
