@@ -26,6 +26,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Optional
 
 import config
+from core.deadline import Deadline, DeadlineExceeded
 
 logger = logging.getLogger("core_llm")
 
@@ -59,6 +60,7 @@ class LLMClient(ABC):
         max_tokens: int,
         reasoning_effort: str,
         json_mode: bool = False,
+        deadline: Optional[Deadline] = None,
     ) -> str:
         """Return the final answer content only (never reasoning)."""
 
@@ -162,6 +164,7 @@ class GroqLLMClient(LLMClient):
         max_tokens: int,
         reasoning_effort: str,
         json_mode: bool,
+        timeout_seconds: float,
     ) -> dict:
         kwargs: dict = {
             "model": self.model_name,
@@ -174,6 +177,7 @@ class GroqLLMClient(LLMClient):
             "reasoning_effort": reasoning_effort,
             "include_reasoning": config.LLM_INCLUDE_REASONING,
             "stream": False,
+            "timeout": timeout_seconds,
         }
         if json_mode and config.LLM_JSON_MODE_ENABLED:
             kwargs["response_format"] = dict(config.LLM_JSON_RESPONSE_FORMAT)
@@ -189,20 +193,27 @@ class GroqLLMClient(LLMClient):
         max_tokens: int,
         reasoning_effort: str,
         json_mode: bool = False,
+        deadline: Optional[Deadline] = None,
     ) -> str:
         self._ensure_client()
 
-        kwargs = self._request_kwargs(
-            system_prompt,
-            user_prompt,
-            temperature,
-            max_tokens,
-            reasoning_effort,
-            json_mode,
-        )
         max_attempts = config.LLM_MAX_RETRIES + 1
 
         for attempt in range(1, max_attempts + 1):
+            if deadline is not None:
+                timeout_seconds = deadline.call_timeout(config.LLM_TIMEOUT_SECONDS)
+            else:
+                timeout_seconds = config.LLM_TIMEOUT_SECONDS
+
+            kwargs = self._request_kwargs(
+                system_prompt,
+                user_prompt,
+                temperature,
+                max_tokens,
+                reasoning_effort,
+                json_mode,
+                timeout_seconds,
+            )
             try:
                 response = self._client.chat.completions.create(**kwargs)
                 return self._extract_content(response)
@@ -241,7 +252,10 @@ class GroqLLMClient(LLMClient):
                     reason,
                     delay,
                 )
-                self._sleep(delay)
+                if deadline is not None:
+                    deadline.sleep(delay, self._sleep)
+                else:
+                    self._sleep(delay)
 
         # Unreachable: the loop either returns or raises.
         raise LLMUnavailableError("LLM request failed after all retries.")

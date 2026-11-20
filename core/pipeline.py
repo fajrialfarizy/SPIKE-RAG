@@ -28,6 +28,7 @@ from core import prompts
 from core.analyzer import Analyzer
 from core.citations import build_source_block, compose_answer, process_citations
 from core.context_builder import ContextBuilder
+from core.deadline import Deadline, DeadlineExceeded
 from core.guardrails import OutputGuard, detect_privacy_request
 from core.llm_client import LLMClient
 from core.retriever import Retriever, RetrievedChunk
@@ -115,10 +116,14 @@ class RagPipeline:
         analyzer: Optional[Analyzer] = None,
         context_builder: Optional[ContextBuilder] = None,
         output_guard: Optional[OutputGuard] = None,
+        deadline_budget_seconds: float = config.PIPELINE_TOTAL_DEADLINE_SECONDS,
+        clock: Any = time.monotonic,
     ):
         self.knowledge_base = knowledge_base
         self.llm = llm
         self.embedder = embedder or E5Embedder()
+        self.deadline_budget_seconds = float(deadline_budget_seconds)
+        self._clock = clock
         self.retriever = retriever or Retriever(knowledge_base, embedder=self.embedder)
         self.analyzer = analyzer or Analyzer(llm)
         self.context_builder = context_builder or ContextBuilder()
@@ -138,7 +143,11 @@ class RagPipeline:
         ]
 
     def _answer_with_llm(
-        self, context_text: str, question: str, mode: QueryMode
+        self,
+        context_text: str,
+        question: str,
+        mode: QueryMode,
+        deadline: Optional[Deadline] = None,
     ) -> str:
         user_prompt = prompts.ANSWER_USER_TEMPLATE.format(
             context=context_text,
@@ -152,6 +161,7 @@ class RagPipeline:
             max_tokens=config.LLM_MAX_OUTPUT_TOKENS,
             reasoning_effort=config.LLM_REASONING_EFFORT_ANSWER,
             json_mode=False,
+            deadline=deadline,
         )
 
     def _answer_user_prompt(
@@ -166,6 +176,7 @@ class RagPipeline:
     # -- main entry point --------------------------------------------------
     def run(self, question: str) -> RagResult:
         started = time.perf_counter()
+        deadline = Deadline(self.deadline_budget_seconds, clock=self._clock)
         state: Dict[str, Any] = {
             "mode": None,
             "filters": {},
@@ -252,11 +263,13 @@ class RagPipeline:
                 if not chunks:
                     return result(AnswerStatus.NOT_FOUND, prompts.NOT_FOUND_RESPONSE)
                 return self._compose_answer(
-                    result, state, chunks, text, QueryMode.SPECIFIC, catalog=None
+                    result, state, chunks, text, QueryMode.SPECIFIC, catalog=None,
+                    deadline=deadline,
                 )
 
             # 3. Analyzer.
-            analysis = self.analyzer.analyze(text)
+            deadline.require_remaining()
+            analysis = self.analyzer.analyze(text, deadline=deadline)
             state["mode"] = analysis.mode.value
             state["filters"] = analysis.filters
             state["used_fallback"] = analysis.used_fallback
@@ -272,7 +285,8 @@ class RagPipeline:
                 if not reports:
                     return result(AnswerStatus.NOT_FOUND, prompts.NOT_FOUND_RESPONSE)
                 return self._compose_answer(
-                    result, state, [], text, analysis.mode, catalog=reports
+                    result, state, [], text, analysis.mode, catalog=reports,
+                    deadline=deadline,
                 )
 
             state["route"] = "semantic"
@@ -282,9 +296,17 @@ class RagPipeline:
             if not chunks:
                 return result(AnswerStatus.NOT_FOUND, prompts.NOT_FOUND_RESPONSE)
             return self._compose_answer(
-                result, state, chunks, text, analysis.mode, catalog=None
+                result, state, chunks, text, analysis.mode, catalog=None,
+                deadline=deadline,
             )
 
+        except DeadlineExceeded as exc:
+            logger.warning("chat_failed error_type=DeadlineExceeded")
+            return result(
+                AnswerStatus.TECHNICAL_ERROR,
+                prompts.TECHNICAL_ERROR_RESPONSE,
+                error_type=type(exc).__name__,
+            )
         except Exception as exc:  # provider, storage or programming failure
             error_type = type(exc).__name__
             logger.warning("chat_failed error_type=%s", error_type)
@@ -303,6 +325,7 @@ class RagPipeline:
         question: str,
         mode: QueryMode,
         catalog: Optional[List[Dict[str, Any]]],
+        deadline: Optional[Deadline] = None,
     ) -> RagResult:
         if catalog is not None:
             bundle = self.context_builder.build_catalog(catalog)
@@ -313,7 +336,9 @@ class RagPipeline:
         state["retrieved"] = self._retrieved_debug(chunks)
         retrieved_ids = list(bundle.report_metadata)
 
-        answer_text = self._answer_with_llm(bundle.text, question, mode)
+        answer_text = self._answer_with_llm(
+            bundle.text, question, mode, deadline=deadline
+        )
 
         def resolve(raw_answer: str):
             return process_citations(raw_answer, bundle.alias_map, retrieved_ids)
@@ -332,6 +357,7 @@ class RagPipeline:
                 max_tokens=config.LLM_MAX_OUTPUT_TOKENS,
                 reasoning_effort=config.LLM_REASONING_EFFORT_ANSWER,
                 json_mode=False,
+                deadline=deadline,
             )
             citations = resolve(answer_text)
 

@@ -142,6 +142,7 @@ class FakeLLM(LLMClient):
         max_tokens: int,
         reasoning_effort: str,
         json_mode: bool = False,
+        deadline: Optional[Any] = None,
     ) -> str:
         self.calls.append(
             {
@@ -151,6 +152,7 @@ class FakeLLM(LLMClient):
                 "max_tokens": max_tokens,
                 "reasoning_effort": reasoning_effort,
                 "json_mode": json_mode,
+                "deadline": deadline,
             }
         )
 

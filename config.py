@@ -27,7 +27,11 @@ LLM_TEMPERATURE_CHAT = 0.2
 LLM_MAX_OUTPUT_TOKENS = 1024
 LLM_MAX_RETRIES = 3
 LLM_RETRY_BACKOFF_FACTOR = 2.0
-LLM_TIMEOUT_SECONDS = 30.0
+# Per-call provider timeout. Bounded further by the remaining pipeline budget.
+LLM_TIMEOUT_SECONDS = 20.0
+# Whole-question budget: every model call and every retry delay respects what is
+# left of it (report K2).
+PIPELINE_TOTAL_DEADLINE_SECONDS = 60.0
 
 # Chunking Parameters
 CHUNK_TARGET_MIN_TOKENS = 350

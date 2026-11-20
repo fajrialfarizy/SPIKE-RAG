@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 
 import config
 from core import prompts
+from core.deadline import Deadline, DeadlineExceeded
 from core.llm_client import LLMClient, LLMError
 from enums import AchievementLevel, CompetitionType, QueryMode
 
@@ -219,7 +220,9 @@ class Analyzer:
         self.llm = llm
         self.system_prompt = system_prompt
 
-    def analyze(self, question: str) -> AnalyzerResult:
+    def analyze(
+        self, question: str, deadline: Optional[Deadline] = None
+    ) -> AnalyzerResult:
         try:
             raw = self.llm.complete(
                 self.system_prompt,
@@ -228,7 +231,11 @@ class Analyzer:
                 max_tokens=config.LLM_ANALYZER_MAX_OUTPUT_TOKENS,
                 reasoning_effort=config.LLM_REASONING_EFFORT_ANALYZER,
                 json_mode=True,
+                deadline=deadline,
             )
+        except DeadlineExceeded:
+            # The whole question is out of budget: do not degrade into a fallback.
+            raise
         except LLMError:
             return fallback_result(question, reason="llm_error")
         except Exception:
