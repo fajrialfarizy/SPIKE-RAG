@@ -55,6 +55,7 @@ class IngestionPipeline:
         chroma_store: ChromaStore,
         embedder: Optional[E5Embedder] = None,
         temp_download_dir: Optional[Path] = None,
+        chunker: Optional[SectionAwareChunker] = None,
     ):
         self.sheets_repo = sheets_repo
         self.drive_repo = drive_repo
@@ -63,7 +64,7 @@ class IngestionPipeline:
         self.pdf_parser = PDFParser()
         self.validator = IngestionValidator()
         self.pii_scrubber = PIIScrubber()
-        self.chunker = SectionAwareChunker()
+        self.chunker = chunker or SectionAwareChunker()
         self.temp_download_dir = temp_download_dir or (config.DATA_DIR / "temp_downloads")
         self.temp_download_dir.mkdir(parents=True, exist_ok=True)
 
@@ -125,8 +126,18 @@ class IngestionPipeline:
                 continue
 
             # Extract text & validate readability
-            cleaned_text = self.pdf_parser.extract_and_clean_text(local_pdf_path)
-            parse_ok, sections, parse_err = self.pdf_parser.parse_sections(cleaned_text)
+            try:
+                cleaned_text = self.pdf_parser.extract_and_clean_text(local_pdf_path)
+                parse_ok, sections, parse_err = self.pdf_parser.parse_sections(
+                    cleaned_text
+                )
+            except Exception as e:
+                reason = f"Gagal membaca PDF: {str(e)}"
+                logger.error("Report %s failed during parsing: %s", report_id, reason)
+                self.sheets_repo.update_rag_status(report_id, RagStatus.PROSES_GAGAL)
+                summary.failed_count += 1
+                summary.failed_reports.append({"report_id": report_id, "reason": reason})
+                continue
 
             if not parse_ok:
                 logger.error("Report %s parsing failed: %s", report_id, parse_err)
@@ -155,41 +166,53 @@ class IngestionPipeline:
                 logger.info("[%s] Terdeteksi %d PII diredaksi: %s", report_id, total_redactions, report_redactions)
                 summary.pii_redactions[report_id] = report_redactions
 
-            # Step 9: Chunking
-            judul_ide = scrubbed_sections.get("judul_ide", "")
-            report_chunks = []
+            # Step 9-10: Chunking and embedding.
+            # A failure here (malformed section, model unavailable) must fail only
+            # this document and leave the batch running (Brief 5.2 #11).
+            try:
+                judul_ide = scrubbed_sections.get("judul_ide", "")
+                report_chunks = []
 
-            for sec_type in [
-                SectionType.EXECUTIVE_SUMMARY,
-                SectionType.EVALUASI_TIM,
-                SectionType.SARAN_PENGEMBANGAN,
-            ]:
-                sec_text = scrubbed_sections.get(sec_type.value, "")
-                if not sec_text:
-                    continue
+                for sec_type in [
+                    SectionType.EXECUTIVE_SUMMARY,
+                    SectionType.EVALUASI_TIM,
+                    SectionType.SARAN_PENGEMBANGAN,
+                ]:
+                    sec_text = scrubbed_sections.get(sec_type.value, "")
+                    if not sec_text:
+                        continue
 
-                chunks = self.chunker.chunk_section(
-                    report_id=report_id,
-                    competition_name=meta.competition_name,
-                    competition_year=meta.competition_year,
-                    competition_type=str(meta.competition_type),
-                    achievement_level=str(meta.achievement_level),
-                    source_file_id=drive_file_id,
-                    judul_ide=judul_ide,
-                    section_type=sec_type,
-                    section_content=sec_text,
-                )
-                report_chunks.extend(chunks)
+                    chunks = self.chunker.chunk_section(
+                        report_id=report_id,
+                        competition_name=meta.competition_name,
+                        competition_year=meta.competition_year,
+                        competition_type=str(meta.competition_type),
+                        achievement_level=str(meta.achievement_level),
+                        source_file_id=drive_file_id,
+                        judul_ide=judul_ide,
+                        section_type=sec_type,
+                        section_content=sec_text,
+                    )
+                    report_chunks.extend(chunks)
 
-            # Record chunk stats
+                if not report_chunks:
+                    raise ValueError("Tidak ada chunk yang dihasilkan dari dokumen")
+
+                texts_to_embed = [c.embed_text for c in report_chunks]
+                embeddings = self.embedder.embed_passages(texts_to_embed)
+            except Exception as e:
+                reason = f"Gagal chunking/embedding: {str(e)}"
+                logger.error("Report %s failed during chunking: %s", report_id, reason)
+                self.sheets_repo.update_rag_status(report_id, RagStatus.PROSES_GAGAL)
+                summary.failed_count += 1
+                summary.failed_reports.append({"report_id": report_id, "reason": reason})
+                continue
+
+            # Record chunk stats only after chunking succeeded
             summary.chunks_per_report[report_id] = len(report_chunks)
             for c in report_chunks:
                 if c.token_count > summary.max_tokens_recorded:
                     summary.max_tokens_recorded = c.token_count
-
-            # Embedding
-            texts_to_embed = [c.embed_text for c in report_chunks]
-            embeddings = self.embedder.embed_passages(texts_to_embed)
 
             # Step 10: Delete-then-insert into ChromaDB
             should_fail = (simulate_failure_on_report == report_id)

@@ -1,26 +1,25 @@
 """
 Section-aware chunker for Lab Prestasi Ingestion.
-Enforces:
-- Judul Ide is injected into context header, NEVER a standalone chunk.
-- Never blends two sections in one chunk.
-- Token counts measured with intfloat/multilingual-e5-small tokenizer.
-- Prefix 'passage: ' and header included in token count.
-- Hard limit <= 512 tokens (assertion + test).
-- Splits by paragraphs/sentences without splitting mid-sentence.
-- Deterministic chunk_id format: {report_id}:{section_type}:{2-digit-index}.
+
+Guarantees:
+- Judul Ide is injected into the context header, never a standalone chunk.
+- Two sections are never merged into one chunk.
+- Tokens are counted with the e5 tokenizer (or an explicitly injected counter).
+- The 'passage: ' prefix and the context header count toward the token budget.
+- Hard limit of 512 tokens, asserted in addition to the 350-450 target window.
+- Paragraph/sentence boundaries are respected; a single overlong sentence is
+  split by word windows (and, pathologically, by characters), so the assertion
+  is unreachable in practice instead of aborting a batch.
+- chunk_id is deterministic: ``{report_id}:{section_type}:{NN}``.
 - Exactly 8 metadata fields.
 """
 
-from typing import List, Dict, Any, Optional
-import glob
-import os
 import re
 from dataclasses import dataclass
-from tokenizers import Tokenizer
-from transformers import AutoTokenizer
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from enums import SectionType
 import config
+from enums import SectionType
 
 
 @dataclass
@@ -28,8 +27,8 @@ class DocumentChunk:
     chunk_id: str
     report_id: str
     section_type: str
-    document_text: str  # Context Header + Content (stored in Chroma without 'passage: ')
-    embed_text: str     # 'passage: ' + document_text (used for embedding calculation)
+    document_text: str  # context header + content (stored in Chroma, no prefix)
+    embed_text: str     # 'passage: ' + document_text (what gets embedded)
     token_count: int
     metadata: Dict[str, Any]
 
@@ -37,40 +36,125 @@ class DocumentChunk:
 class SectionAwareChunker:
     """Chunks evaluation sections while preserving structural context and token limits."""
 
+    SECTION_LABELS = {
+        SectionType.EXECUTIVE_SUMMARY: "Executive Summary / Abstrak",
+        SectionType.EVALUASI_TIM: "Evaluasi Tim",
+        SectionType.SARAN_PENGEMBANGAN: "Saran Pengembangan",
+    }
+
     def __init__(self, tokenizer: Optional[Any] = None):
-        if tokenizer is not None:
-            self.tokenizer = tokenizer
+        """
+        `tokenizer` may be a HuggingFace tokenizer, or any object exposing
+        ``count_tokens(text) -> int``. When omitted, the e5 tokenizer is loaded
+        lazily from the configured model on first use.
+        """
+        self.tokenizer = tokenizer
+        self._counter = None
+
+    def _resolve_counter(self):
+        if self._counter is not None:
+            return self._counter
+
+        if self.tokenizer is None:
+            from transformers import AutoTokenizer
+
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    config.EMBEDDING_MODEL_NAME
+                )
+            except Exception as exc:  # pragma: no cover - environment dependent
+                raise RuntimeError(
+                    "Could not load the e5 tokenizer for chunking. Chunking requires "
+                    f"the tokenizer of '{config.EMBEDDING_MODEL_NAME}'. "
+                    "Inject a counter explicitly for offline runs."
+                ) from exc
+
+        if hasattr(self.tokenizer, "count_tokens"):
+            self._counter = self.tokenizer.count_tokens
         else:
-            # Fast local loading via tokenizers from HF cache, falling back to AutoTokenizer
-            cache_pattern = os.path.expanduser(
-                "~/.cache/huggingface/hub/models--intfloat--multilingual-e5-small/snapshots/*/tokenizer.json"
+            self._counter = lambda text: len(
+                self.tokenizer.encode(text, add_special_tokens=False)
             )
-            matches = glob.glob(cache_pattern)
-            if matches:
-                self.tokenizer = Tokenizer.from_file(matches[0])
-                self._is_fast = True
-            else:
-                self.tokenizer = AutoTokenizer.from_pretrained(config.EMBEDDING_MODEL_NAME)
-                self._is_fast = False
+        return self._counter
 
     def count_tokens(self, text: str) -> int:
-        """Count tokens using E5 tokenizer."""
-        if hasattr(self, "_is_fast") and self._is_fast:
-            return len(self.tokenizer.encode(text).ids)
-        return len(self.tokenizer.encode(text, add_special_tokens=False))
+        """Count tokens with the e5 tokenizer (or the injected counter)."""
+        return self._resolve_counter()(text)
 
-    def split_into_sentences(self, text: str) -> List[str]:
-        """Split text into sentences cleanly without breaking mid-sentence."""
-        # Split on sentence boundaries (.!? followed by whitespace or newline)
-        raw_sentences = re.split(r"(?<=[.!?])\s+", text)
-        sentences = [s.strip() for s in raw_sentences if s.strip()]
-        return sentences
+    @staticmethod
+    def split_into_sentences(text: str) -> List[str]:
+        """Split on sentence boundaries without breaking mid-sentence."""
+        raw = re.split(r"(?<=[.!?])\s+", text)
+        return [part.strip() for part in raw if part.strip()]
 
-    def split_into_paragraphs(self, text: str) -> List[str]:
-        """Split text into paragraphs."""
-        raw_paras = text.split("\n")
-        paras = [p.strip() for p in raw_paras if p.strip()]
-        return paras
+    @staticmethod
+    def split_into_paragraphs(text: str) -> List[str]:
+        raw = text.split("\n")
+        return [part.strip() for part in raw if part.strip()]
+
+    def _split_by_words(self, text: str, max_tokens: int) -> List[str]:
+        """Greedily pack words into pieces that fit the token budget."""
+        pieces: List[str] = []
+        current: List[str] = []
+
+        for word in text.split():
+            candidate = " ".join(current + [word])
+            if current and self.count_tokens(candidate) > max_tokens:
+                pieces.append(" ".join(current))
+                current = [word]
+            else:
+                current.append(word)
+
+        if current:
+            pieces.append(" ".join(current))
+        return pieces
+
+    def _split_by_chars(self, text: str, max_tokens: int) -> List[str]:
+        """Last-resort split for a single 'word' that alone exceeds the budget."""
+        pieces: List[str] = []
+        remaining = text.strip()
+        while remaining:
+            low, high, best = 1, len(remaining), 1
+            while low <= high:
+                mid = (low + high) // 2
+                if self.count_tokens(remaining[:mid]) <= max_tokens:
+                    best = mid
+                    low = mid + 1
+                else:
+                    high = mid - 1
+            pieces.append(remaining[:best].strip())
+            remaining = remaining[best:].lstrip()
+        return [piece for piece in pieces if piece]
+
+    def _section_atoms(
+        self, section_content: str, budget: int
+    ) -> List[Tuple[str, str]]:
+        """
+        Break a section into packable atoms with their joining separator.
+
+        Paragraphs are preferred; overlong paragraphs go to sentences; overlong
+        sentences go to word windows (separator ' ').
+        """
+        atoms: List[Tuple[str, str]] = []
+
+        for paragraph in self.split_into_paragraphs(section_content):
+            if self.count_tokens(paragraph) <= budget:
+                atoms.append((paragraph, "\n\n"))
+                continue
+
+            for sentence in self.split_into_sentences(paragraph):
+                if self.count_tokens(sentence) <= budget:
+                    atoms.append((sentence, " "))
+                    continue
+
+                for window in self._split_by_words(sentence, budget):
+                    if self.count_tokens(window) <= budget:
+                        atoms.append((window, " "))
+                    else:
+                        for piece in self._split_by_chars(window, budget):
+                            atoms.append((piece, " "))
+
+        return atoms
 
     def chunk_section(
         self,
@@ -86,44 +170,39 @@ class SectionAwareChunker:
     ) -> List[DocumentChunk]:
         """
         Chunk a single section into one or more DocumentChunks.
-        Embeds context header:
-        Kompetisi: {competition_name} ({competition_type}, {competition_year}) | Judul ide: {judul_ide} | Bagian: {label}
-        """
-        section_label_map = {
-            SectionType.EXECUTIVE_SUMMARY: "Executive Summary / Abstrak",
-            SectionType.EVALUASI_TIM: "Evaluasi Tim",
-            SectionType.SARAN_PENGEMBANGAN: "Saran Pengembangan",
-        }
-        label = section_label_map[section_type]
 
+        Context header (embedded and stored):
+        ``Kompetisi: {name} ({type}, {year}) | Judul ide: {judul} | Bagian: {label}``
+        """
+        label = self.SECTION_LABELS[section_type]
         header = (
             f"Kompetisi: {competition_name} ({competition_type}, {competition_year}) | "
             f"Judul ide: {judul_ide} | Bagian: {label}"
         )
         passage_prefix = config.EMBEDDING_PASSAGE_PREFIX
-
-        # Calculate base tokens taken by prefix and header
         header_tokens = self.count_tokens(f"{passage_prefix}{header}\n\n")
-        available_tokens = config.CHUNK_TARGET_MAX_TOKENS - header_tokens
-        hard_available_tokens = config.CHUNK_HARD_LIMIT_TOKENS - header_tokens
+        budget = config.CHUNK_TARGET_MAX_TOKENS - header_tokens
+        hard_budget = config.CHUNK_HARD_LIMIT_TOKENS - header_tokens
 
-        paragraphs = self.split_into_paragraphs(section_content)
-        chunks: List[DocumentChunk] = []
-        current_paras: List[str] = []
-
-        def build_chunk(content_text: str, chunk_num: int) -> DocumentChunk:
-            doc_text = f"{header}\n\n{content_text}"
-            embed_text = f"{passage_prefix}{doc_text}"
-            tok_count = self.count_tokens(embed_text)
-
-            # Strict assertion: No chunk ever exceeds 512 tokens
-            assert tok_count <= config.CHUNK_HARD_LIMIT_TOKENS, (
-                f"Chunk token count {tok_count} exceeds hard limit {config.CHUNK_HARD_LIMIT_TOKENS}!"
+        if budget <= 0:
+            raise ValueError(
+                f"Context header for {report_id}:{section_type.value} consumes "
+                f"{header_tokens} tokens, leaving no room inside the "
+                f"{config.CHUNK_TARGET_MAX_TOKENS}-token target."
             )
 
-            cid = f"{report_id}:{section_type.value}:{chunk_num:02d}"
+        def build_chunk(content_text: str, chunk_number: int) -> DocumentChunk:
+            document_text = f"{header}\n\n{content_text}"
+            embed_text = f"{passage_prefix}{document_text}"
+            token_count = self.count_tokens(embed_text)
 
-            # Strictly 8 metadata fields as specified in PRD 7.3 & Brief 5.3
+            assert token_count <= config.CHUNK_HARD_LIMIT_TOKENS, (
+                f"Chunk {report_id}:{section_type.value}:{chunk_number:02d} has "
+                f"{token_count} tokens, above the hard limit "
+                f"{config.CHUNK_HARD_LIMIT_TOKENS}"
+            )
+
+            chunk_id = f"{report_id}:{section_type.value}:{chunk_number:02d}"
             metadata = {
                 "report_id": report_id,
                 "competition_name": competition_name,
@@ -132,49 +211,37 @@ class SectionAwareChunker:
                 "competition_type": competition_type,
                 "section_type": section_type.value,
                 "source_file_id": source_file_id,
-                "chunk_id": cid,
+                "chunk_id": chunk_id,
             }
-            assert len(metadata) == 8, f"Metadata must have exactly 8 fields, got {len(metadata)}"
+            assert len(metadata) == 8, (
+                f"Metadata must have exactly 8 fields, got {len(metadata)}"
+            )
 
             return DocumentChunk(
-                chunk_id=cid,
+                chunk_id=chunk_id,
                 report_id=report_id,
                 section_type=section_type.value,
-                document_text=doc_text,
+                document_text=document_text,
                 embed_text=embed_text,
-                token_count=tok_count,
+                token_count=token_count,
                 metadata=metadata,
             )
 
-        chunk_counter = 1
+        atoms = self._section_atoms(section_content, budget)
+        chunks: List[DocumentChunk] = []
+        current_text = ""
+        chunk_number = 1
 
-        for para in paragraphs:
-            para_tokens = self.count_tokens(para)
-
-            # If a single paragraph is too large to fit, break by sentences
-            if para_tokens > available_tokens:
-                sentences = self.split_into_sentences(para)
-                for sent in sentences:
-                    candidate = " ".join(current_paras + [sent])
-                    cand_tokens = self.count_tokens(candidate)
-                    if cand_tokens > available_tokens and current_paras:
-                        # Flush current
-                        chunks.append(build_chunk(" ".join(current_paras), chunk_counter))
-                        chunk_counter += 1
-                        current_paras = [sent]
-                    else:
-                        current_paras.append(sent)
+        for atom, separator in atoms:
+            candidate = f"{current_text}{separator}{atom}" if current_text else atom
+            if current_text and self.count_tokens(candidate) > budget:
+                chunks.append(build_chunk(current_text, chunk_number))
+                chunk_number += 1
+                current_text = atom
             else:
-                candidate = "\n\n".join(current_paras + [para])
-                cand_tokens = self.count_tokens(candidate)
-                if cand_tokens > available_tokens and current_paras:
-                    chunks.append(build_chunk("\n\n".join(current_paras), chunk_counter))
-                    chunk_counter += 1
-                    current_paras = [para]
-                else:
-                    current_paras.append(para)
+                current_text = candidate
 
-        if current_paras:
-            chunks.append(build_chunk("\n\n".join(current_paras), chunk_counter))
+        if current_text:
+            chunks.append(build_chunk(current_text, chunk_number))
 
         return chunks
