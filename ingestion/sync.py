@@ -57,6 +57,7 @@ class ChromaSync:
             "schema_version": config.MANIFEST_SCHEMA_VERSION,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "embedding_model": config.EMBEDDING_MODEL_NAME,
+            "embedding_dimension": config.EMBEDDING_DIMENSION,
             "report_count": len(reports),
             "chunk_count": total_chunks,
             "report_ids": reports,

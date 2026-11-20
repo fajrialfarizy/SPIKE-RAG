@@ -91,6 +91,8 @@ RETRIEVAL_CROSS_REPORT_MAX_CHUNKS_PER_REPORT = 2
 
 # Catalog Mode Settings
 RETRIEVAL_CATALOG_MAX_REPORTS = 50
+# Catalog reads metadata only; this bounds a single Chroma get() before dedupe.
+RETRIEVAL_CATALOG_FETCH_LIMIT = 500
 
 # Similarity threshold (similarity = 1 - cosine distance).
 # TODO(Phase 4): this is a conservative placeholder. It must be tuned from the

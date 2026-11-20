@@ -306,6 +306,7 @@ def test_manifest_and_artifact_roundtrip(env):
     assert manifest["report_count"] >= 10
     assert manifest["chunk_count"] == store.count_chunks()
     assert manifest["embedding_model"] == config.EMBEDDING_MODEL_NAME
+    assert manifest["embedding_dimension"] == config.EMBEDDING_DIMENSION
     assert manifest["schema_version"] == config.MANIFEST_SCHEMA_VERSION
     assert manifest["zip_checksum"] == ChromaSync.calculate_file_hash(zip_path)
 

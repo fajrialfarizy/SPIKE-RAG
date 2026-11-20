@@ -55,6 +55,64 @@ class HashEmbedder:
         return self._vector(f"{config.EMBEDDING_QUERY_PREFIX}{query}")
 
 
+class RecordingEmbedder:
+    """Records the exact text handed to the query embedding path."""
+
+    def __init__(self):
+        self.model_name = config.EMBEDDING_MODEL_NAME
+        self.queries: List[str] = []
+
+    def embed_query(self, query: str) -> List[float]:
+        self.queries.append(f"{config.EMBEDDING_QUERY_PREFIX}{query}")
+        return [0.0] * config.EMBEDDING_DIMENSION
+
+
+class FakeKnowledgeBase:
+    """
+    In-memory knowledge base double.
+
+    It does not evaluate where filters: filter translation is unit tested
+    separately, and the fake records what it received so tests can prove the
+    retriever never drops a filter.
+    """
+
+    def __init__(
+        self,
+        matches: Optional[List[Any]] = None,
+        chunks: Optional[List[Any]] = None,
+        metadatas: Optional[List[Dict[str, Any]]] = None,
+        total: Optional[int] = None,
+    ):
+        self.matches = list(matches or [])
+        self.chunks = list(chunks or [])
+        self.metadatas = list(metadatas or [])
+        self.total = total if total is not None else len(self.matches)
+        self.query_calls: List[Dict[str, Any]] = []
+        self.id_calls: List[List[str]] = []
+        self.metadata_calls: List[Dict[str, Any]] = []
+
+    def count_chunks(self) -> int:
+        return self.total
+
+    def query(self, query_embedding, where=None, n_results=1):
+        self.query_calls.append(
+            {
+                "query_embedding": list(query_embedding),
+                "where": where,
+                "n_results": n_results,
+            }
+        )
+        return self.matches[:n_results]
+
+    def get_by_report_ids(self, report_ids):
+        self.id_calls.append(list(report_ids))
+        return [chunk for chunk in self.chunks if chunk.report_id in report_ids]
+
+    def list_report_metadatas(self, where=None, limit=config.RETRIEVAL_CATALOG_FETCH_LIMIT):
+        self.metadata_calls.append({"where": where, "limit": limit})
+        return self.metadatas[:limit]
+
+
 class FakeLLM(LLMClient):
     """
     Scripted LLM double used by every offline test.
