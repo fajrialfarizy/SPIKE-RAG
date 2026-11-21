@@ -46,6 +46,109 @@ def _normalize(text: str) -> str:
     return " ".join((text or "").casefold().split())
 
 
+# -- citation relocation (fix pack J3a) -----------------------------------
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_BULLET_PREFIX = re.compile(r"^(\s*(?:[-*+]|\d+[.)])\s+)")
+_TRAILING_PUNCTUATION = ".,;:!?"
+_TRAILING_ALIAS_GROUP = re.compile(
+    r"[\[\(]\s*LAP[0-9]{1,3}(?:\s*[,;/]\s*LAP[0-9]{1,3})*\s*[\]\)]$"
+)
+_NOISE = " \t\r\n.,;:!?*_-\u2013\u2014()[]{}\"'"
+
+
+def _has_prose(text: str) -> bool:
+    """True when the fragment still carries words (not just punctuation)."""
+    return bool(text.strip(_NOISE))
+
+
+def _relocate_segment(segment: str) -> str:
+    """
+    Move mid-sentence alias citations to the end of the sentence.
+
+    A sentence whose citations are followed by prose (``[LAP1] juga ...``) or
+    that names aliases in parentheses (``Tim juara (LAP2, LAP3) menekankan``)
+    gets every such mention removed and the deduplicated union appended just
+    before the closing punctuation. Aliases are never left in the prose.
+    """
+    matches = list(config.PATTERN_ALIAS_SINGLE.finditer(segment))
+    if not matches:
+        return segment
+
+    last = matches[-1]
+    if _has_prose(segment[last.end():]):
+        moved = list(matches)
+    else:
+        moved = [
+            match
+            for match in matches[:-1]
+            if _has_prose(segment[match.end():last.start()])
+        ]
+    if not moved:
+        return segment
+
+    aliases: List[str] = []
+    for match in moved:
+        alias = match.group("alias")
+        if alias not in aliases:
+            aliases.append(alias)
+
+    ordered = sorted(moved, key=lambda item: item.start())
+    consecutive = all(
+        not segment[left.end():right.start()].strip(" \t,;/()[]{}")
+        for left, right in zip(ordered, ordered[1:])
+    )
+
+    if consecutive:
+        # "(LAP2, LAP3)" or "[LAP1] [LAP2]": drop the whole span, including the
+        # parentheses the model wrapped around the aliases.
+        result = segment[: ordered[0].start()] + segment[ordered[-1].end():]
+    else:
+        result = segment
+        for match in reversed(ordered):
+            result = result[: match.start()] + result[match.end():]
+
+    # Removing a mention can leave "()" or "(, )" behind.
+    result = re.sub(r"[\[\(]\s*[,;]?\s*[\]\)]", "", result)
+    result = re.sub(r"[ \t]{2,}", " ", result)
+
+    trailing = ""
+    stripped = result.rstrip()
+    while stripped and stripped[-1] in _TRAILING_PUNCTUATION:
+        trailing = stripped[-1] + trailing
+        stripped = stripped[:-1].rstrip()
+
+    # A citation group that already ends the sentence joins the moved aliases, in
+    # reading order, instead of leaving two adjacent groups behind.
+    existing = _TRAILING_ALIAS_GROUP.search(stripped)
+    if existing:
+        for alias in re.findall(r"LAP[0-9]{1,3}", existing.group(0)):
+            if alias not in aliases:
+                aliases.append(alias)
+        stripped = stripped[: existing.start()].rstrip()
+
+    citation = f"[{', '.join(aliases)}]"
+    if not stripped:
+        return citation + trailing
+    return f"{stripped} {citation}{trailing}"
+
+
+def relocate_citations(text: str) -> str:
+    """Per line and sentence, keep every alias citation at the end of its unit."""
+    lines = (text or "").split("\n")
+    output: List[str] = []
+    for line in lines:
+        prefix = ""
+        body = line
+        bullet = _BULLET_PREFIX.match(line)
+        if bullet:
+            prefix = bullet.group(1)
+            body = line[bullet.end():]
+        segments = _SENTENCE_SPLIT.split(body)
+        relocated = " ".join(_relocate_segment(segment) for segment in segments)
+        output.append(f"{prefix}{relocated}" if prefix else relocated)
+    return "\n".join(output)
+
+
 def find_uncited_mentions(
     text: str,
     cited_report_ids: Sequence[str],
@@ -94,7 +197,9 @@ def process_citations(
     """Resolve aliases, drop fabricated ids and report what happened."""
     incidents = {"unknown_alias": 0, "fabricated_report_id": 0}
     allowed = set(retrieved_report_ids)
-    text = answer or ""
+    # Fix pack J3a: relocate before resolving, so an alias never survives inside
+    # a sentence or inside parentheses.
+    text = relocate_citations(answer or "")
 
     def replace_list(match: "re.Match[str]") -> str:
         aliases = re.findall(r"LAP[0-9]{1,3}", match.group(0))

@@ -173,6 +173,20 @@ class TokenAwareRateLimiter:
 
         return max(wait_tokens, wait_requests)
 
+    def wait_estimate(self, tokens: int) -> float:
+        """
+        Seconds a call of this size would wait, without reserving anything.
+
+        Read-only on purpose: the app shows this before a question so the notice
+        cannot itself consume the window it is describing.
+        """
+        tokens = max(0, int(tokens))
+        with self._lock:
+            now = self._clock()
+            self._roll_day(now)
+            self._prune_minute(now)
+            return max(0.0, self._minute_wait(now, tokens))
+
     def _daily_exhausted(self, tokens: int) -> bool:
         # The local counters are authoritative for the daily window: TPD is not
         # exposed by any header, and a stale x-ratelimit-remaining-requests value

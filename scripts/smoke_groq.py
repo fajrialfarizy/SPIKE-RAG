@@ -115,6 +115,14 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         help="Print the raw model output of every answer attempt (dummy data only).",
     )
     parser.add_argument(
+        "--show-context",
+        action="store_true",
+        help=(
+            "Print the exact context blocks the answer model received "
+            "(dummy data only)."
+        ),
+    )
+    parser.add_argument(
         "--answer-effort",
         choices=config.ANSWER_REASONING_EFFORT_VALUES,
         default=config.ANSWER_REASONING_EFFORT,
@@ -299,6 +307,11 @@ def main(argv: Optional[list] = None) -> int:
             print(f"coverage: {result.debug.coverage}")
         if args.show_raw:
             print_raw_answers(result.debug.raw_answers)
+        if args.show_context:
+            print(f"context_chars={len(result.debug.context_text)}")
+            print("--- context sent to the answer model ---")
+            print(result.debug.context_text)
+            print("--- end context ---")
         print(
             f"context_dropped={_json(result.debug.context_dropped_chunk_ids)} "
             f"cited={result.cited_report_ids} "

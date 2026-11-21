@@ -153,9 +153,14 @@ class LLMClient(ABC):
         max_tokens: int,
         reasoning_effort: str,
         json_mode: bool = False,
+        response_format: Optional[Mapping[str, Any]] = None,
         deadline: Optional[Deadline] = None,
     ) -> LLMResult:
-        """Return the final content only (never reasoning)."""
+        """Return the final content only (never reasoning).
+
+        ``response_format`` carries a full Structured Outputs object (fix pack
+        J1); when given it wins over ``json_mode``.
+        """
 
 
 class LLMConcurrencyLimiter:
@@ -449,6 +454,7 @@ class GroqLLMClient(LLMClient):
         reasoning_effort: str,
         json_mode: bool,
         timeout_seconds: float,
+        response_format: Optional[Mapping[str, Any]] = None,
     ) -> dict:
         kwargs: dict = {
             "model": self.model_name,
@@ -460,7 +466,10 @@ class GroqLLMClient(LLMClient):
             "stream": False,
             "timeout": timeout_seconds,
         }
-        if json_mode and config.LLM_JSON_MODE_ENABLED:
+        if response_format is not None:
+            # Structured Outputs (json_schema) supersede JSON Object Mode.
+            kwargs["response_format"] = dict(response_format)
+        elif json_mode and config.LLM_JSON_MODE_ENABLED:
             kwargs["response_format"] = dict(config.LLM_JSON_RESPONSE_FORMAT)
         return kwargs
 
@@ -498,6 +507,7 @@ class GroqLLMClient(LLMClient):
         max_tokens: int,
         reasoning_effort: str,
         json_mode: bool = False,
+        response_format: Optional[Mapping[str, Any]] = None,
         deadline: Optional[Deadline] = None,
     ) -> LLMResult:
         self._ensure_client()
@@ -521,6 +531,7 @@ class GroqLLMClient(LLMClient):
                 reasoning_effort,
                 json_mode,
                 timeout_seconds,
+                response_format,
             )
             wait_started = self._clock()
             reservation = self._reserve_tokens(

@@ -22,15 +22,21 @@ def test_the_addendum_is_version_1_3_and_states_the_placement_rules():
 
 
 def test_a_citation_glued_to_a_word_gets_a_separating_space():
+    result = process_citations("Kendala utamanya di[LAP1].", ALIASES, RETRIEVED)
+
+    assert result.text == "Kendala utamanya di [RPT0001]."
+
+
+def test_mid_sentence_mentions_are_moved_and_the_parentheses_removed():
     result = process_citations(
-        "Kendala utamanya di[LAP1] dan hambatan kedua (LAP2).",
+        "Kendala utama adalah logistik [LAP1] dan koordinasi (LAP2).",
         ALIASES,
         RETRIEVED,
     )
 
-    assert "di [RPT0001]" in result.text
-    # A parenthesized alias is resolved to the bare bracketed citation.
-    assert "hambatan kedua [RPT0002]." in result.text
+    assert result.text == (
+        "Kendala utama adalah logistik dan koordinasi [RPT0001], [RPT0002]."
+    )
     assert "(" not in result.text
     assert result.cited_report_ids == ["RPT0001", "RPT0002"]
 

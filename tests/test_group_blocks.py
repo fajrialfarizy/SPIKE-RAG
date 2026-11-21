@@ -58,9 +58,33 @@ def cross_payload():
     )
 
 
-def build_pipeline(matches):
+def structured_payload():
+    """One valid comparison answer citing both groups (fix pack J1)."""
+    return json.dumps(
+        {
+            "groups": [
+                {
+                    "label": "juara",
+                    "points": [
+                        {"text": "Tim juara fokus pada validasi pasar.", "cite": ["LAP1"]}
+                    ],
+                },
+                {
+                    "label": "belum juara",
+                    "points": [
+                        {"text": "Tim finalis kekurangan waktu uji coba.", "cite": ["LAP2"]}
+                    ],
+                },
+            ],
+            "differences": [],
+        }
+    )
+
+
+def build_pipeline(matches, structured=None):
     llm = FakeLLM(
         json_responses=[cross_payload()],
+        structured_responses=[structured or structured_payload()],
         text_responses=[
             "Tim juara fokus pada validasi pasar [LAP1], tim finalis pada waktu [LAP2]."
         ],

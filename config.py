@@ -16,6 +16,10 @@ FIXTURES_DIR = TESTS_DIR / "fixtures"
 
 # Model Configuration
 EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
+# Which embedding implementation is serving answers. Recorded in the startup log
+# and checked against the manifest once an alternative runtime exists
+# (docs/ONNX_PLAN.md). Only "sentence-transformers" is implemented.
+EMBEDDING_RUNTIME = "sentence-transformers"
 EMBEDDING_PASSAGE_PREFIX = "passage: "
 EMBEDDING_QUERY_PREFIX = "query: "
 EMBEDDING_DIMENSION = 384
@@ -321,6 +325,13 @@ LLM_MAX_CONCURRENT_CALLS = 2
 # account cannot afford ~2,000-token contexts. 2,500 tokens still fits about six
 # 350-450-token chunks.
 MAX_CONTEXT_TOKENS = 2500
+# Comparison answers are structured JSON (fix pack J1): up to 3 groups x 4 points
+# plus 3 differences, each with its own citations. 900 completion tokens leaves
+# room for ~160-250 reasoning tokens at effort "low" and 4,900 characters of
+# JSON, i.e. the documented point caps would have to be hit at every level.
+# Justification: the previous free-text cap was 800; the structured answer adds
+# per-point citation arrays but removes the prose headings the backend now writes.
+LLM_MAX_OUTPUT_TOKENS_COMPARE = 900
 # Comparison mode has its own budget (fix pack H3); specific mode and the exact
 # report-id route keep MAX_CONTEXT_TOKENS.
 CONTEXT_TOKEN_ESTIMATOR_CHARS_PER_TOKEN = 2.5
@@ -418,8 +429,18 @@ COMPARISON_AWARD_LEVELS = (
 )
 COMPARISON_GROUPS = {
     "achievement_group": (
-        {"label": "juara", "filter": {"achievement_level": COMPARISON_AWARD_LEVELS}},
-        {"label": "belum juara", "filter": {"achievement_level": ("Finalis",)}},
+        {
+            "label": "juara",
+            "filter": {"achievement_level": COMPARISON_AWARD_LEVELS},
+            # Fix pack J3b: the coverage sentence names the group in plain
+            # language, so a student does not have to decode "laporan juara".
+            "coverage_label": "meraih penghargaan",
+        },
+        {
+            "label": "belum juara",
+            "filter": {"achievement_level": ("Finalis",)},
+            "coverage_label": "belum juara (finalis)",
+        },
     ),
     "competition_type": (
         {"label": "Business Plan", "filter": {"competition_type": ("Business Plan",)}},
@@ -635,9 +656,19 @@ AUTH_MIN_PASSWORD_LENGTH = 12
 # A small fixed delay on every failed attempt (config owns the number).
 AUTH_FAILURE_DELAY_SECONDS = 0.5
 
-# Per-session quota guards for the shared Groq allowance.
+# Per-session quota guards for the shared Groq allowance. These are browser
+# session counters only, so they slow one tab down; they do not protect the shared
+# account from several sessions at once (reported as a known limitation).
 SESSION_COOLDOWN_SECONDS = 5.0
-SESSION_HOURLY_MESSAGE_CAP = 20
+SESSION_HOURLY_MESSAGE_CAP = 10
+SESSION_MAX_QUESTIONS_PER_DAY = 15
+SESSION_DAY_WINDOW_SECONDS = 86400
+# The answer call's own token footprint at the configured caps: completion plus
+# the context budget plus the instruction and question blocks. Used to predict a
+# queue wait before the question is sent (fix pack J4).
+QUEUE_MESSAGE_ESTIMATE_TOKENS = 4800
+# Only a wait longer than this is worth a message.
+QUEUE_MESSAGE_MIN_WAIT_SECONDS = 3.0
 CHAT_HISTORY_MAX_TURNS = 50
 
 # Knowledge-base sources. "local" serves an existing chroma_db + manifest;
@@ -666,7 +697,31 @@ SETTINGS_ENV_KB_SOURCE = "KB_SOURCE"
 SETTINGS_ENV_KB_LOCAL_DIR = "KB_LOCAL_DIR"
 SETTINGS_ENV_KB_MANIFEST_PATH = "KB_MANIFEST_PATH"
 SETTINGS_ENV_KB_DRIVE_FOLDER_ID = "KB_DRIVE_FOLDER_ID"
+# Optional exact Drive file ids (fix pack P2). When set, the app downloads those
+# files directly instead of resolving names; a stale id fails loudly.
+SETTINGS_ENV_KB_DRIVE_MANIFEST_FILE_ID = "KB_DRIVE_MANIFEST_FILE_ID"
+SETTINGS_ENV_KB_DRIVE_ARTIFACT_FILE_ID = "KB_DRIVE_ARTIFACT_FILE_ID"
 SETTINGS_ENV_KB_WORK_DIR = "KB_WORK_DIR"
+
+# ---------------------------------------------------------------------------
+# Structured comparison answers (fix pack J1). The model returns JSON; the
+# backend validates it and writes every heading, citation and count itself.
+COMPARE_JSON_SCHEMA_NAME = "compare_answer"
+COMPARE_POINTS_PER_GROUP_MAX = 4
+COMPARE_DIFFERENCES_MAX = 3
+COMPARE_POINT_MAX_WORDS = 40
+COMPARE_CITE_MIN = 1
+COMPARE_CITE_MAX = 2
+COMPARE_GROUP_HEADING_TEMPLATE = "**{label}**"
+COMPARE_DIFFERENCES_HEADING = "**Perbedaan utama**"
+COMPARE_EMPTY_GROUP = (
+    "Tidak ada poin yang dapat ditelusuri ke dokumen untuk kelompok ini."
+)
+COMPARE_BULLET_TEMPLATE = "- {text} {citations}"
+COMPARE_CITATION_TEMPLATE = "[{report_ids}]"
+COMPARE_CITATION_JOINER = ", "
+COMPARE_SECTION_SEPARATOR = "\n\n"
+COMPARE_LINE_SEPARATOR = "\n"
 
 # Operational logging for the app layer (metadata only).
 APP_LOG_FILE_PREFIX = "app"

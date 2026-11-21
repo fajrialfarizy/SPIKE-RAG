@@ -47,12 +47,21 @@ def comparison_totals(
     totals = []
     for group in config.COMPARISON_GROUPS.get(compare_by, ()):
         merged = merge_filter_dicts(filters, group.get("filter"))
+        # Fix pack J3b: the sentence names the group in plain language.
+        coverage_label = group.get("coverage_label") or group["label"]
         if any(not values for values in merged.values()):
-            totals.append({"label": group["label"], "total": 0})
+            totals.append(
+                {
+                    "label": group["label"],
+                    "coverage_label": coverage_label,
+                    "total": 0,
+                }
+            )
             continue
         totals.append(
             {
                 "label": group["label"],
+                "coverage_label": coverage_label,
                 "total": count_reports(knowledge_base, merged),
             }
         )
@@ -68,7 +77,7 @@ def build_coverage_line(
         config.COVERAGE_GROUP_TEMPLATE.format(
             shown=int(shown_counts.get(item["label"], 0)),
             total=int(item["total"]),
-            label=item["label"],
+            label=item.get("coverage_label") or item["label"],
         )
         for item in totals
     ]

@@ -33,6 +33,7 @@ from core.auth import AuthConfigurationError, AuthManager
 from core.kb_sync import DriveKBSource, KBSynchronizer, KBSyncError, KBVersion
 from core.llm_client import GroqLLMClient
 from core.pipeline import RagPipeline, configure_file_logging
+from core.rate_limiter import TokenAwareRateLimiter, get_token_limiter
 from core.settings import Settings, SettingsError, load_settings
 from core.tokens import E5TokenCounter
 from core.warmup import WarmupError, warm_up_embedder
@@ -42,6 +43,9 @@ logger = logging.getLogger("app")
 
 SETTINGS_OVERRIDE_KEY = "_settings_override"
 RUNTIME_OVERRIDE_KEY = "_runtime_factory"
+# AppTest injects a limiter double here; the script runner re-executes app.py, so
+# a patched module attribute would not reach the running script.
+QUEUE_LIMITER_OVERRIDE_KEY = "_queue_limiter"
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +107,9 @@ class AppRuntime:
     synchronizer: KBSynchronizer
     lock: threading.Lock = field(default_factory=threading.Lock)
     load_seconds: float = 0.0
+    kb_load_seconds: float = 0.0
+    embedder_load_seconds: float = 0.0
+    embedding_runtime: str = config.EMBEDDING_RUNTIME
     warmup_ms: float = 0.0
     rss_startup_mb: Optional[float] = None
     first_query_ms: Optional[float] = None
@@ -120,15 +127,20 @@ def build_runtime(settings: Settings) -> AppRuntime:
             folder_id=settings.kb.drive_folder_id or "",
             service_account_info=settings.gcp_service_account,
             manifest_name=settings.kb.drive_manifest_name,
+            manifest_file_id=settings.kb.drive_manifest_file_id,
+            artifact_file_id=settings.kb.drive_artifact_file_id,
         )
 
     synchronizer = KBSynchronizer(settings.kb, source=source)
+    kb_started = time.perf_counter()
     version = synchronizer.current()
+    kb_load_seconds = round(time.perf_counter() - kb_started, 2)
     if version.handle is None:
         raise KBSyncError("The knowledge base was not validated by its loader.")
 
     embedder = E5Embedder()
     warmup_ms = warm_up_embedder(embedder)
+    embedder_load_seconds = float(getattr(embedder, "load_seconds", 0.0) or 0.0)
 
     pipeline = RagPipeline(
         knowledge_base=version.handle,
@@ -144,16 +156,26 @@ def build_runtime(settings: Settings) -> AppRuntime:
         kb_version=version,
         synchronizer=synchronizer,
         load_seconds=load_seconds,
+        kb_load_seconds=kb_load_seconds,
+        embedder_load_seconds=embedder_load_seconds,
         warmup_ms=warmup_ms,
         rss_startup_mb=rss_mb(),
     )
+    # ONE startup line (fix pack P3): enough to judge memory and cold start from
+    # Streamlit Cloud logs without reading anything else.
     logger.info(
-        "app_runtime_ready kb_source=%s chunks=%d load_seconds=%.2f "
-        "warmup_ms=%.1f rss_mb=%s",
+        "app_startup embedding_runtime=%s embedding_model=%s kb_version=%s "
+        "kb_source=%s chunks=%d kb_load_seconds=%.2f embedder_load_seconds=%.2f "
+        "embedder_warmup_ms=%.1f total_load_seconds=%.2f rss_mb=%s",
+        runtime.embedding_runtime,
+        config.EMBEDDING_MODEL_NAME,
+        version.version,
         settings.kb.source,
         version.chunk_count,
-        load_seconds,
+        kb_load_seconds,
+        embedder_load_seconds,
         warmup_ms,
+        load_seconds,
         runtime.rss_startup_mb,
     )
     return runtime
@@ -190,7 +212,7 @@ def logout() -> None:
 
 
 def quota_message(now: Optional[float] = None) -> Optional[str]:
-    """Cooldown and hourly cap for the shared Groq allowance."""
+    """Cooldown, hourly cap and daily cap for this browser session."""
     now = time.time() if now is None else now
 
     last = st.session_state.get("last_message_at")
@@ -200,12 +222,45 @@ def quota_message(now: Optional[float] = None) -> Optional[str]:
             seconds = int(config.SESSION_COOLDOWN_SECONDS - elapsed) + 1
             return T.COOLDOWN.format(seconds=seconds)
 
+    all_times = list(st.session_state.get("message_times", []))
     window_start = now - 3600
-    recent = [stamp for stamp in st.session_state.get("message_times", []) if stamp > window_start]
+    recent = [stamp for stamp in all_times if stamp > window_start]
     st.session_state["message_times"] = recent
     if len(recent) >= config.SESSION_HOURLY_MESSAGE_CAP:
         return T.HOURLY_LIMIT
+
+    day_start = now - config.SESSION_DAY_WINDOW_SECONDS
+    daily = [stamp for stamp in all_times if stamp > day_start]
+    if len(daily) >= config.SESSION_MAX_QUESTIONS_PER_DAY:
+        return T.SESSION_DAILY_LIMIT
     return None
+
+
+def queue_wait_seconds(limiter: Optional[TokenAwareRateLimiter] = None) -> float:
+    """
+    Predicted wait before the answer call's tokens fit the minute window.
+
+    Read-only: it never reserves tokens, so a message cannot change the quota the
+    question then consumes. The estimate uses the configured token caps, which is
+    the same figure the client reserves for the answer call.
+    """
+    try:
+        limiter = limiter or st.session_state.get(QUEUE_LIMITER_OVERRIDE_KEY)
+        limiter = limiter or get_token_limiter()
+        return float(limiter.wait_estimate(config.QUEUE_MESSAGE_ESTIMATE_TOKENS))
+    except Exception:  # a prediction must never block a question
+        return 0.0
+
+
+def queue_message(
+    limiter: Optional[TokenAwareRateLimiter] = None,
+    now: Optional[float] = None,
+) -> Optional[str]:
+    """The queue notice for this question, or None when the wait is short."""
+    wait = queue_wait_seconds(limiter)
+    if wait <= config.QUEUE_MESSAGE_MIN_WAIT_SECONDS:
+        return None
+    return T.QUEUE_WAIT.format(seconds=int(wait) + 1)
 
 
 def _record_message(now: Optional[float] = None) -> None:
@@ -321,8 +376,12 @@ def _handle_question(runtime: AppRuntime, question: str) -> None:
         st.markdown(text[: config.CHAT_MAX_INPUT_CHARS])
 
     with st.chat_message("assistant"):
-        with st.spinner(T.THINKING):
+        with st.status(T.THINKING, expanded=False) as status:
+            notice = queue_message()
+            if notice:
+                status.write(notice)
             answer = answer_question(runtime, text[: config.CHAT_MAX_INPUT_CHARS])
+            status.update(label=T.THINKING, state="complete", expanded=False)
         st.markdown(answer)
 
     _append("assistant", answer)
@@ -355,8 +414,9 @@ def render_chat(runtime: AppRuntime) -> None:
         T.CHAT_PLACEHOLDER, max_chars=config.CHAT_MAX_INPUT_CHARS
     )
     if question:
+        # No extra rerun here: the answer and its processing status were rendered
+        # in this run, and a rerun would discard the status block (fix pack J4).
         _handle_question(runtime, question)
-        st.rerun()
 
     _render_examples(runtime)
 

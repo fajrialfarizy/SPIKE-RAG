@@ -135,6 +135,42 @@ def test_the_hourly_cap_blocks_the_next_question(tmp_path, monkeypatch):
     assert at.session_state["chat_history"][-1]["content"] == T.HOURLY_LIMIT
 
 
+def test_a_long_queue_wait_is_shown_inside_the_processing_status(tmp_path, monkeypatch):
+    class SlowLimiter:
+        def wait_estimate(self, tokens):
+            return 12.0
+
+    pipeline = FakePipeline(answer="Kendala utama adalah logistik [RPT0002].")
+    at, _ = start_app(tmp_path, runtime=make_runtime(tmp_path, pipeline), monkeypatch=monkeypatch)
+    at.session_state["_queue_limiter"] = SlowLimiter()
+    login(at)
+
+    ask(at, "Apa kendala tim?")
+
+    rendered = [element.value for element in at.markdown if isinstance(element.value, str)]
+    rendered += [
+        element.value
+        for status in at.status
+        for element in status.markdown
+        if isinstance(element.value, str)
+    ]
+    assert any("Sedang mengantre karena batas layanan" in value for value in rendered)
+    assert pipeline.questions == ["Apa kendala tim?"]
+
+
+def test_the_session_daily_cap_blocks_the_next_question(tmp_path, monkeypatch):
+    pipeline = FakePipeline()
+    at, _ = start_app(tmp_path, runtime=make_runtime(tmp_path, pipeline), monkeypatch=monkeypatch)
+    login(at)
+    now = time.time()
+    at.session_state["message_times"] = [now - 7200] * config.SESSION_MAX_QUESTIONS_PER_DAY
+
+    at.chat_input[0].set_value("Apa kendala tim?").run()
+
+    assert pipeline.questions == []
+    assert at.session_state["chat_history"][-1]["content"] == T.SESSION_DAILY_LIMIT
+
+
 def test_the_three_example_buttons_run_their_question(tmp_path, monkeypatch):
     pipeline = FakePipeline()
     at, _ = start_app(tmp_path, runtime=make_runtime(tmp_path, pipeline), monkeypatch=monkeypatch)

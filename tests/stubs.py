@@ -171,15 +171,23 @@ class FakeLLM(LLMClient):
         self,
         json_responses: Optional[List[str]] = None,
         text_responses: Optional[List[str]] = None,
+        structured_responses: Optional[List[str]] = None,
         fail_with: Optional[BaseException] = None,
         usage: Optional[TokenUsage] = None,
         text_finish_reasons: Optional[List[Optional[str]]] = None,
+        structured_finish_reasons: Optional[List[Optional[str]]] = None,
     ):
         self.json_responses = list(json_responses or [])
         self.text_responses = list(text_responses or [])
+        # Fix pack J1: structured (json_schema) calls get their own queue, so a
+        # test never has to guess whether the analyzer or the answer pops next.
+        self.structured_responses = (
+            None if structured_responses is None else list(structured_responses)
+        )
         self.fail_with = fail_with
         self.usage = usage or TokenUsage()
         self.text_finish_reasons = list(text_finish_reasons or [])
+        self.structured_finish_reasons = list(structured_finish_reasons or [])
         self.calls: List[Dict[str, Any]] = []
 
     def complete(
@@ -191,6 +199,7 @@ class FakeLLM(LLMClient):
         max_tokens: int,
         reasoning_effort: str,
         json_mode: bool = False,
+        response_format: Optional[Dict[str, Any]] = None,
         deadline: Optional[Any] = None,
     ) -> LLMResult:
         self.calls.append(
@@ -201,6 +210,7 @@ class FakeLLM(LLMClient):
                 "max_tokens": max_tokens,
                 "reasoning_effort": reasoning_effort,
                 "json_mode": json_mode,
+                "response_format": response_format,
                 "deadline": deadline,
             }
         )
@@ -208,12 +218,21 @@ class FakeLLM(LLMClient):
         if self.fail_with is not None:
             raise self.fail_with
 
-        queue = self.json_responses if json_mode else self.text_responses
+        structured = bool(response_format) and response_format.get("type") == "json_schema"
+        finish_reason = None
+        if structured and self.structured_responses is not None:
+            queue = self.structured_responses
+            if self.structured_finish_reasons:
+                finish_reason = self.structured_finish_reasons.pop(0)
+        elif json_mode:
+            queue = self.json_responses
+        else:
+            queue = self.text_responses
+            if self.text_finish_reasons:
+                finish_reason = self.text_finish_reasons.pop(0)
+
         if not queue:
             raise LLMResponseError("FakeLLM has no scripted response left")
-        finish_reason = None
-        if not json_mode and self.text_finish_reasons:
-            finish_reason = self.text_finish_reasons.pop(0)
         return LLMResult(
             content=queue.pop(0),
             usage=self.usage,
@@ -226,5 +245,18 @@ class FakeLLM(LLMClient):
         return sum(1 for call in self.calls if call["json_mode"])
 
     @property
+    def structured_call_count(self) -> int:
+        return sum(
+            1
+            for call in self.calls
+            if call.get("response_format")
+            and call["response_format"].get("type") == "json_schema"
+        )
+
+    @property
     def text_call_count(self) -> int:
-        return sum(1 for call in self.calls if not call["json_mode"])
+        return sum(
+            1
+            for call in self.calls
+            if not call["json_mode"] and not call.get("response_format")
+        )

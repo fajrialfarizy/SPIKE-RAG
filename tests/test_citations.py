@@ -44,7 +44,9 @@ def test_several_aliases_are_all_resolved_in_order():
         "A [LAP1] lalu B [LAP2] dan lagi [LAP1].", ALIASES, RETRIEVED
     )
 
-    assert result.text == "A [RPT0002] lalu B [RPT0003] dan lagi [RPT0002]."
+    # Fix pack J3a: both mentions leave the middle of the sentence and are
+    # merged, deduplicated, at the end.
+    assert result.text == "A lalu B dan lagi [RPT0002], [RPT0003]."
     assert result.cited_report_ids == ["RPT0002", "RPT0003"]
 
 
@@ -74,7 +76,8 @@ def test_a_parenthesised_alias_becomes_a_bracketed_report_id():
 def test_a_comma_list_keeps_brackets_around_each_id():
     result = process_citations("Dua laporan [LAP1, LAP2] sepakat.", ALIASES, RETRIEVED)
 
-    assert result.text == "Dua laporan [RPT0002], [RPT0003] sepakat."
+    # Fix pack J3a: a citation followed by prose moves to the sentence end.
+    assert result.text == "Dua laporan sepakat [RPT0002], [RPT0003]."
     assert result.cited_report_ids == ["RPT0002", "RPT0003"]
 
 

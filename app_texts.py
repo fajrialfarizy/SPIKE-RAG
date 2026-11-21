@@ -48,6 +48,13 @@ COOLDOWN = "Tunggu {seconds} detik sebelum mengirim pertanyaan berikutnya."
 HOURLY_LIMIT = (
     "Batas pertanyaan per jam untuk sesi ini sudah tercapai. Coba lagi nanti."
 )
+SESSION_DAILY_LIMIT = (
+    "Batas pertanyaan harian untuk sesi ini sudah tercapai. Coba lagi besok."
+)
+# Fix pack J4: shown inside the processing status while the token limiter waits.
+QUEUE_WAIT = (
+    "Sedang mengantre karena batas layanan, perkiraan tunggu ~{seconds} detik."
+)
 # Mirrors core.prompts.DAILY_QUOTA_RESPONSE (the pipeline owns that text); kept
 # here so the UI strings stay in one reviewable file.
 DAILY_QUOTA = "Kuota harian layanan sedang habis. Silakan coba lagi besok."

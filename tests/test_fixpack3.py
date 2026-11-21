@@ -249,10 +249,30 @@ def group_payload(compare_by="achievement_group"):
     )
 
 
-def comparison_base(matches, metadatas, answer=None, compare_by="achievement_group"):
+def comparison_base(
+    matches, metadatas, cites=None, compare_by="achievement_group"
+):
+    """Grouped comparison pipeline with a structured answer (fix pack J1)."""
+    structured = json.dumps(
+        {
+            "groups": [
+                {
+                    "label": "juara",
+                    "points": [
+                        {
+                            "text": "Tim juara memvalidasi masalah sebelum final.",
+                            "cite": list(cites or ("LAP1", "LAP2")),
+                        }
+                    ],
+                },
+                {"label": "belum juara", "points": []},
+            ],
+            "differences": [],
+        }
+    )
     llm = FakeLLM(
         json_responses=[group_payload(compare_by)],
-        text_responses=[answer or "Tim juara fokus validasi pasar [LAP1], finalis pada waktu [LAP2]."],
+        structured_responses=[structured],
     )
     pipeline = RagPipeline(
         knowledge_base=FilteringKnowledgeBase(matches=matches, metadatas=metadatas),
@@ -354,9 +374,11 @@ def test_the_coverage_line_reports_shown_against_available_reports():
 
     result = pipeline.run("Bandingkan tim juara dan belum juara.")
 
+    # Fix pack J3b: only the two cited reports count, so the sentence and the
+    # Sumber block agree. The answer cites LAP1 and LAP2, both in the award group.
     assert result.debug.coverage == (
-        "Ringkasan ini didasarkan pada 3 dari 4 laporan juara dan "
-        "2 dari 3 laporan belum juara."
+        "Ringkasan ini didasarkan pada 2 dari 4 laporan meraih penghargaan dan "
+        "0 dari 3 laporan belum juara (finalis)."
     )
     assert result.answer.index(result.debug.coverage) < result.answer.index("**Sumber**")
 
@@ -369,8 +391,8 @@ def test_a_group_without_data_is_stated_honestly():
     result = pipeline.run("Bandingkan tim juara dan belum juara.")
 
     assert result.debug.coverage == (
-        "Ringkasan ini didasarkan pada 2 dari 2 laporan juara dan "
-        "0 dari 0 laporan belum juara."
+        "Ringkasan ini didasarkan pada 2 dari 2 laporan meraih penghargaan dan "
+        "0 dari 0 laporan belum juara (finalis)."
     )
 
 
@@ -400,7 +422,7 @@ def test_cross_report_without_grouping_uses_the_generic_coverage_line():
     result = pipeline.run("Bandingkan kendala beberapa tim.")
 
     assert result.debug.coverage == (
-        "Ringkasan ini didasarkan pada 3 dari 5 laporan yang sesuai."
+        "Ringkasan ini didasarkan pada 1 dari 5 laporan yang sesuai."
     )
 
 

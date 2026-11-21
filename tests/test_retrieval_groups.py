@@ -210,6 +210,29 @@ def test_grouping_rejects_a_non_comparison_mode():
 
 
 # -- pipeline -------------------------------------------------------------
+def structured_payload():
+    """One valid comparison answer citing both groups (fix pack J1)."""
+    return json.dumps(
+        {
+            "groups": [
+                {
+                    "label": "juara",
+                    "points": [
+                        {"text": "Tim juara fokus pada validasi pasar.", "cite": ["LAP1"]}
+                    ],
+                },
+                {
+                    "label": "belum juara",
+                    "points": [
+                        {"text": "Tim finalis kekurangan waktu uji coba.", "cite": ["LAP2"]}
+                    ],
+                },
+            ],
+            "differences": [],
+        }
+    )
+
+
 def test_the_pipeline_passes_the_group_status_to_the_answer_model():
     matches = [
         match("RPT0001", level="Juara 1"),
@@ -217,6 +240,7 @@ def test_the_pipeline_passes_the_group_status_to_the_answer_model():
     ]
     llm = FakeLLM(
         json_responses=[cross_payload("achievement_group")],
+        structured_responses=[structured_payload()],
         text_responses=["Tim juara fokus pada validasi pasar [LAP1], tim finalis pada waktu [LAP2]."],
     )
     pipeline = RagPipeline(
@@ -243,6 +267,7 @@ def test_an_empty_group_reaches_the_answer_prompt_as_a_limitation():
     matches = [match("RPT0001", level="Juara 1")]
     llm = FakeLLM(
         json_responses=[cross_payload("achievement_group")],
+        structured_responses=[structured_payload()],
         text_responses=["Hanya tim juara yang tersedia [LAP1]."],
     )
     pipeline = RagPipeline(

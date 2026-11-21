@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import config
-from core import prompts
+from core import compare_answer, prompts
 from core.analyzer import Analyzer
 from core.catalog import render_catalog_answer
 from core.citations import (
@@ -98,6 +98,8 @@ class DebugInfo:
     style: Dict[str, int] = field(default_factory=dict)
     # Backend-written coverage line for comparison answers (fix pack H3b).
     coverage: str = ""
+    # Exact context text the answer model received (developer evidence only).
+    context_text: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -123,6 +125,7 @@ class DebugInfo:
             "raw_answers": self.raw_answers,
             "style": self.style,
             "coverage": self.coverage,
+            "context_text": self.context_text,
         }
 
 
@@ -282,6 +285,7 @@ class RagPipeline:
             "raw_answers": [],
             "style": {},
             "coverage": "",
+            "context_text": "",
         }
 
         def result(
@@ -314,6 +318,7 @@ class RagPipeline:
                 raw_answers=list(state["raw_answers"]),
                 style=dict(state["style"]),
                 coverage=state["coverage"],
+                context_text=state["context_text"],
             )
             logger.info(
                 "chat_request status=%s mode=%s route=%s chunks=%d latency_ms=%.1f "
@@ -516,12 +521,19 @@ class RagPipeline:
         state: Dict[str, Any],
         bundle: Any,
         chunks: List[RetrievedChunk],
+        cited_report_ids: Optional[List[str]] = None,
     ) -> str:
-        """Backend coverage sentence for cross_report answers (fix pack H3b)."""
+        """
+        Backend coverage sentence for cross_report answers (fix pack H3b).
+
+        Fix pack J3b: only reports actually cited in the final answer are
+        counted, so the sentence and the Sumber block always agree.
+        """
         if state.get("mode") != QueryMode.CROSS_REPORT.value:
             return ""
 
         filters = state.get("filters") or {}
+        cited = list(cited_report_ids or [])
         compare_by = state.get("compare_by")
         if compare_by:
             group_by_report: Dict[str, str] = {}
@@ -530,15 +542,20 @@ class RagPipeline:
                 if label is not None:
                     group_by_report.setdefault(chunk.report_id, label)
             shown_counts: Dict[str, int] = {}
-            for report_id in bundle.report_metadata:
+            for report_id in cited:
+                if report_id not in bundle.report_metadata:
+                    continue
                 label = group_by_report.get(report_id)
                 if label is not None:
                     shown_counts[label] = shown_counts.get(label, 0) + 1
             totals = comparison_totals(self.knowledge_base, filters, compare_by)
             return build_coverage_line(totals, shown_counts)
 
+        shown = len(
+            [report_id for report_id in cited if report_id in bundle.report_metadata]
+        )
         return build_cross_report_coverage_line(
-            len(bundle.report_metadata), count_reports(self.knowledge_base, filters)
+            shown, count_reports(self.knowledge_base, filters)
         )
 
     @staticmethod
@@ -553,6 +570,124 @@ class RagPipeline:
             "reasoning_tokens": usage.reasoning_tokens,
             "content_chars": len(completion.content or ""),
         }
+
+    def _structured_technical_error(
+        self, result, state: Dict[str, Any], error_type: str
+    ) -> RagResult:
+        """Invalid structured output is technical, never a partial answer."""
+        state["incidents"][error_type] = 1
+        logger.info("chat_structured_output_invalid error_type=%s", error_type)
+        return result(
+            AnswerStatus.TECHNICAL_ERROR,
+            prompts.TECHNICAL_ERROR_RESPONSE,
+            error_type=error_type,
+        )
+
+    def _compose_compare_answer(
+        self,
+        result,
+        state: Dict[str, Any],
+        chunks: List[RetrievedChunk],
+        bundle: Any,
+        question: str,
+        deadline: Optional[Deadline] = None,
+    ) -> RagResult:
+        """
+        Comparison answer as validated JSON rendered by the backend (fix pack J1).
+
+        The model writes no heading, no citation and no count. Invalid JSON or a
+        truncated completion is a technical error with no retry (quota), and a
+        payload with nothing traceable to a document is NO_SOURCE.
+        """
+        compare_by = state.get("compare_by")
+        labels = [
+            group["label"]
+            for group in config.COMPARISON_GROUPS.get(compare_by, ())
+        ]
+        if not labels:
+            return self._structured_technical_error(
+                result, state, "invalid_structured_output"
+            )
+
+        alias_by_report = {
+            report_id: alias for alias, report_id in bundle.alias_map.items()
+        }
+        group_aliases: Dict[str, List[str]] = {label: [] for label in labels}
+        report_group: Dict[str, str] = {}
+        for chunk in chunks:
+            label = getattr(chunk, "group_label", None)
+            if label is None or label not in group_aliases:
+                continue
+            report_group.setdefault(chunk.report_id, label)
+            alias = alias_by_report.get(chunk.report_id)
+            if alias and alias not in group_aliases[label]:
+                group_aliases[label].append(alias)
+
+        user_prompt = prompts.COMPARE_USER_TEMPLATE.format(
+            context=bundle.text,
+            hint=prompts.build_group_hint(state.get("groups") or [], compare_by),
+            group_aliases=prompts.build_compare_group_aliases(group_aliases),
+            question=question,
+        )
+        completion = self.llm.complete(
+            prompts.SYSTEM_PROMPT_COMPARE,
+            user_prompt,
+            temperature=config.LLM_TEMPERATURE_CHAT,
+            max_tokens=config.LLM_MAX_OUTPUT_TOKENS_COMPARE,
+            reasoning_effort=self.answer_reasoning_effort,
+            json_mode=True,
+            response_format=compare_answer.response_format(labels),
+            deadline=deadline,
+        )
+        state["calls"].append(completion.to_metrics("answer_compare"))
+        state["raw_answers"].append(self._raw_answer(1, completion))
+
+        if completion.finish_reason == "length":
+            state["incidents"]["answer_truncated"] = 1
+            return self._structured_technical_error(
+                result, state, "invalid_structured_output"
+            )
+
+        try:
+            payload = compare_answer.parse_payload(completion.content)
+            validation = compare_answer.validate_payload(
+                payload,
+                labels=labels,
+                alias_map=bundle.alias_map,
+                report_group=report_group,
+                retrieved=list(bundle.report_metadata),
+            )
+        except compare_answer.CompareFormatError:
+            return self._structured_technical_error(
+                result, state, "invalid_structured_output"
+            )
+
+        for key, value in validation.incidents.items():
+            state["incidents"][key] = state["incidents"].get(key, 0) + value
+
+        if validation.is_empty:
+            return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
+
+        answer_text = compare_answer.render_answer(validation)
+        state["style"] = citation_style_metrics(answer_text)
+
+        coverage_line = self._coverage_line(
+            state, bundle, chunks, validation.cited_report_ids
+        )
+        state["coverage"] = coverage_line
+        if coverage_line:
+            answer_text = f"{answer_text}{config.COVERAGE_BLOCK_SEPARATOR}{coverage_line}"
+
+        source_block = build_source_block(
+            validation.cited_report_ids, bundle.report_metadata
+        )
+        final_answer = compose_answer(answer_text, source_block)
+
+        return result(
+            AnswerStatus.ANSWERED,
+            final_answer,
+            cited=validation.cited_report_ids,
+        )
 
     def _compose_answer(
         self,
@@ -585,7 +720,13 @@ class RagPipeline:
         state["context_dropped_chunk_ids"] = dropped
         state["alias_map"] = bundle.alias_map
         state["retrieved"] = self._retrieved_debug(chunks)
+        state["context_text"] = bundle.text
         retrieved_ids = list(bundle.report_metadata)
+
+        if state.get("compare_by"):
+            return self._compose_compare_answer(
+                result, state, chunks, bundle, question, deadline=deadline
+            )
 
         if id_route:
             # Fix pack H1: the question names a report id while the model only sees
@@ -677,7 +818,9 @@ class RagPipeline:
         if truncated:
             answer_text = f"{answer_text}\n\n{prompts.TRUNCATION_NOTICE}"
 
-        coverage_line = self._coverage_line(state, bundle, chunks)
+        coverage_line = self._coverage_line(
+            state, bundle, chunks, citations.cited_report_ids
+        )
         state["coverage"] = coverage_line
         if coverage_line:
             answer_text = f"{answer_text}{config.COVERAGE_BLOCK_SEPARATOR}{coverage_line}"
