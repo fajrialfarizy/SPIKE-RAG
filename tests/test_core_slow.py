@@ -174,3 +174,48 @@ def test_id_route_reads_the_requested_report(persist_dir):
     assert result.debug.alias_map == {"LAP1": "RPT0002"}
     assert llm.json_call_count == 0
     assert result.debug.retrieved  # chunks were fetched by exact filter
+
+
+def test_four_concurrent_questions_match_their_sequential_answers(persist_dir):
+    """Streamlit serves sessions in threads; shared read-only use must be safe."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from core.warmup import warm_up_embedder
+
+    knowledge_base = KnowledgeBase(persist_dir=persist_dir)
+    embedder = E5Embedder()
+    warm_up_embedder(embedder)
+
+    questions = [
+        "Apakah ada pengalaman tim mengolah ampas kopi menjadi briket?",
+        "Apa kendala presentasi yang dihadapi tim?",
+        "Apa saran pengembangan untuk rantai pasok?",
+        "Bagaimana evaluasi keamanan sistem informasi cloud?",
+    ]
+
+    def run_one(question):
+        pipeline = RagPipeline(
+            knowledge_base=knowledge_base,
+            llm=FakeLLM(
+                json_responses=[analysis_json("kendala dan saran pengembangan")],
+                text_responses=["Kendala utama adalah logistik [LAP1]."],
+            ),
+            embedder=embedder,
+        )
+        return pipeline.run(question)
+
+    sequential = [run_one(question) for question in questions]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        concurrent = list(pool.map(run_one, questions))
+
+    for expected, actual in zip(sequential, concurrent):
+        assert actual.status is expected.status
+        assert actual.answer == expected.answer
+        assert actual.cited_report_ids == expected.cited_report_ids
+        assert len(actual.debug.retrieved) == len(expected.debug.retrieved)
+        assert [chunk["report_id"] for chunk in actual.debug.retrieved] == [
+            chunk["report_id"] for chunk in expected.debug.retrieved
+        ]
+        assert [chunk["score"] for chunk in actual.debug.retrieved] == pytest.approx(
+            [chunk["score"] for chunk in expected.debug.retrieved]
+        )
