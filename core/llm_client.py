@@ -92,6 +92,9 @@ class TokenUsage:
     completion_tokens: int = 0
     reasoning_tokens: int = 0
     total_tokens: int = 0
+    # Fix pack H5b: prompt tokens the provider served from its cache. None means
+    # the provider did not report the field (as opposed to reported zero).
+    cached_tokens: Optional[int] = None
 
     @property
     def total(self) -> int:
@@ -100,12 +103,15 @@ class TokenUsage:
         return self.prompt_tokens + self.completion_tokens + self.reasoning_tokens
 
     def to_dict(self) -> Dict[str, int]:
-        return {
+        data: Dict[str, int] = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "total_tokens": self.total,
         }
+        if self.cached_tokens is not None:
+            data["cached_tokens"] = self.cached_tokens
+        return data
 
 
 @dataclass(frozen=True)
@@ -117,11 +123,17 @@ class LLMResult:
     latency_ms: float = 0.0
     attempts: int = 1
     finish_reason: Optional[str] = None
+    # Fix pack H5a: waiting inside this process (token reservation plus the
+    # concurrency slot) is separate from the provider's own response time.
+    queue_wait_ms: float = 0.0
+    model_latency_ms: float = 0.0
 
     def to_metrics(self, name: str) -> Dict[str, Any]:
         return {
             "name": name,
             "latency_ms": round(self.latency_ms, 1),
+            "queue_wait_ms": round(self.queue_wait_ms, 1),
+            "model_latency_ms": round(self.model_latency_ms, 1),
             "attempts": self.attempts,
             "usage": self.usage.to_dict(),
             "finish_reason": self.finish_reason,
@@ -201,6 +213,19 @@ def get_llm_limiter() -> LLMConcurrencyLimiter:
 def get_api_key() -> Optional[str]:
     """Read the API key from the environment. The value is never logged."""
     return os.environ.get(config.LLM_API_KEY_ENV_VAR)
+
+
+def _optional_int_field(obj: Any, name: str) -> Optional[int]:
+    """Like _int_field, but keeps "not reported" distinct from a reported zero."""
+    value = getattr(obj, name, None)
+    if value is None and isinstance(obj, Mapping):
+        value = obj.get(name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _int_field(obj: Any, name: str) -> int:
@@ -374,11 +399,13 @@ class GroqLLMClient(LLMClient):
 
         usage_obj = getattr(response, "usage", None)
         details = getattr(usage_obj, "completion_tokens_details", None)
+        prompt_details = getattr(usage_obj, "prompt_tokens_details", None)
         usage = TokenUsage(
             prompt_tokens=_int_field(usage_obj, "prompt_tokens"),
             completion_tokens=_int_field(usage_obj, "completion_tokens"),
             reasoning_tokens=_int_field(details, "reasoning_tokens"),
             total_tokens=_int_field(usage_obj, "total_tokens"),
+            cached_tokens=_optional_int_field(prompt_details, "cached_tokens"),
         )
 
         finish_reason = getattr(choices[0], "finish_reason", None)
@@ -477,6 +504,8 @@ class GroqLLMClient(LLMClient):
 
         max_attempts = config.LLM_MAX_RETRIES + 1
         started = self._clock()
+        queue_wait_ms = 0.0
+        model_latency_ms = 0.0
 
         for attempt in range(1, max_attempts + 1):
             if deadline is not None:
@@ -493,12 +522,16 @@ class GroqLLMClient(LLMClient):
                 json_mode,
                 timeout_seconds,
             )
+            wait_started = self._clock()
             reservation = self._reserve_tokens(
                 system_prompt, user_prompt, max_tokens, deadline
             )
             try:
                 with self.limiter.slot(deadline):
+                    queue_wait_ms += (self._clock() - wait_started) * 1000.0
+                    model_started = self._clock()
                     response = self._client.chat.completions.create(**kwargs)
+                    model_latency_ms += (self._clock() - model_started) * 1000.0
                 result = self._extract(response)
                 self.token_limiter.record(reservation, result.usage.total)
                 return LLMResult(
@@ -507,6 +540,8 @@ class GroqLLMClient(LLMClient):
                     latency_ms=(self._clock() - started) * 1000.0,
                     attempts=attempt,
                     finish_reason=result.finish_reason,
+                    queue_wait_ms=queue_wait_ms,
+                    model_latency_ms=model_latency_ms,
                 )
             except LLMError:
                 self.token_limiter.release(reservation)
