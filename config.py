@@ -516,3 +516,59 @@ PATTERN_SECURITY_IGNORE_PREVIOUS = re.compile(
 LEAK_NGRAM_SIZE = 8
 LEAK_MIN_MATCHED_SHINGLES = 3
 LEAK_OVERLAP_RATIO_THRESHOLD = 0.5
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Streamlit application, authentication and knowledge-base sync.
+
+APP_TITLE = "Lab Prestasi"
+APP_LAYOUT = "centered"
+
+# Password hashing (OWASP Password Storage Cheat Sheet, checked 2026-11-20:
+# PBKDF2-HMAC-SHA256 with 600,000 iterations).
+AUTH_HASH_SCHEME = "pbkdf2_sha256"
+AUTH_PBKDF2_ALGORITHM = "sha256"
+AUTH_PBKDF2_ITERATIONS = 600_000
+AUTH_MIN_PBKDF2_ITERATIONS = 100_000
+AUTH_PBKDF2_SALT_BYTES = 16
+AUTH_MIN_PASSWORD_LENGTH = 12
+# A small fixed delay on every failed attempt (config owns the number).
+AUTH_FAILURE_DELAY_SECONDS = 0.5
+
+# Per-session quota guards for the shared Groq allowance.
+SESSION_COOLDOWN_SECONDS = 5.0
+SESSION_HOURLY_MESSAGE_CAP = 20
+CHAT_HISTORY_MAX_TURNS = 50
+
+# Knowledge-base sources. "local" serves an existing chroma_db + manifest;
+# "drive" downloads the published artifact from the private Drive folder.
+KB_SOURCE_LOCAL = "local"
+KB_SOURCE_DRIVE = "drive"
+KB_SOURCES = (KB_SOURCE_LOCAL, KB_SOURCE_DRIVE)
+KB_DRIVE_SCOPES = ("https://www.googleapis.com/auth/drive.readonly",)
+# Manifest written by scripts/run_ingestion.py next to its artifact bundle.
+ARTIFACT_DIR = DATA_DIR / "artifacts"
+ARTIFACT_MANIFEST_PATH = ARTIFACT_DIR / MANIFEST_FILE_NAME
+
+KB_DRIVE_MANIFEST_NAME = "manifest.json"
+KB_DRIVE_ARTIFACT_NAME = "chroma_backup.zip"
+KB_MANIFEST_TTL_SECONDS = 300.0
+KB_WORK_DIR = DATA_DIR / "kb_work"
+KB_VERSION_DIR_PREFIX = "kb_"
+KB_ZIP_MAX_MEMBERS = 5000
+KB_ZIP_MAX_UNCOMPRESSED_BYTES = 250 * 1024 * 1024
+KB_REPORT_COUNT_TOLERANCE = 0
+
+# Secrets/environment keys read by core.settings. Values are never logged.
+SETTINGS_ENV_AUTH_USERNAME = "LAB_PRESTASI_USERNAME"
+SETTINGS_ENV_AUTH_PASSWORD_HASH = "LAB_PRESTASI_PASSWORD_HASH"
+SETTINGS_ENV_KB_SOURCE = "KB_SOURCE"
+SETTINGS_ENV_KB_LOCAL_DIR = "KB_LOCAL_DIR"
+SETTINGS_ENV_KB_MANIFEST_PATH = "KB_MANIFEST_PATH"
+SETTINGS_ENV_KB_DRIVE_FOLDER_ID = "KB_DRIVE_FOLDER_ID"
+SETTINGS_ENV_KB_WORK_DIR = "KB_WORK_DIR"
+
+# Operational logging for the app layer (metadata only).
+APP_LOG_FILE_PREFIX = "app"
+PYTHON_MIN_SQLITE_VERSION = (3, 35, 0)
+PYTHON_MIN_FOR_SQLITE_NOTE = "3.35.0"

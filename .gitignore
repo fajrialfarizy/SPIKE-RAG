@@ -38,6 +38,10 @@ chroma_db/
 # Raw & generated PDFs and evaluation files
 data/dummy_pdfs/
 data/*.pdf
+# Ingestion artifacts and knowledge-base version directories
+data/artifacts/
+data/kb_work/
+data/temp_downloads/
 
 # Logs & temporary run summaries
 logs/

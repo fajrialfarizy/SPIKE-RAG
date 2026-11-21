@@ -60,6 +60,16 @@ onnxruntime==1.32.0
 # PyPI numpy (not latest: 2.5.5)
 numpy==2.5.1
 
+# Runtime memory measurement for the app's operational log (metadata only).
+# Source: https://psutil.readthedocs.io ; PyPI psutil
+psutil==7.2.2
+
+# Streamlit Community Cloud ships an older system SQLite on some images; chromadb
+# requires >= 3.35. This shim is Linux-only and is imported before chromadb when
+# present (see .streamlit config notes in README). It does NOT install on Windows.
+# Source: https://docs.trychroma.com/troubleshooting ; PyPI pysqlite3-binary
+pysqlite3-binary==0.5.4.post2; sys_platform == "linux"
+
 # Testing Framework
 # Source: https://docs.pytest.org ; PyPI pytest
 pytest==9.2.0
