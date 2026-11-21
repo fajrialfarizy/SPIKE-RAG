@@ -271,6 +271,7 @@ def main(argv: Optional[list] = None) -> int:
     cached_tokens = 0
     cached_reported = False
     truncated_answers = 0
+    negation_total = 0
     style_totals = {"mid_sentence_citations": 0, "unbalanced_parentheses": 0}
     print(
         f"model={config.LLM_MODEL_NAME} answer_effort={args.answer_effort} "
@@ -303,6 +304,13 @@ def main(argv: Optional[list] = None) -> int:
             f"style={_json(result.debug.style)} "
             f"incidents={_json(result.debug.incidents)}"
         )
+        negation = result.debug.negation or {}
+        print(f"negation_sentences={negation.get('count', 0)}")
+        if args.show_raw and negation.get("samples"):
+            # Debug-only evidence; never logged and never user-facing.
+            print("negation_samples:")
+            for sample in negation["samples"]:
+                print(f"  - {sample}")
         if result.debug.coverage:
             print(f"coverage: {result.debug.coverage}")
         if args.show_raw:
@@ -335,6 +343,7 @@ def main(argv: Optional[list] = None) -> int:
         truncated_answers += int(
             (result.debug.incidents or {}).get("answer_truncated") or 0
         )
+        negation_total += int(negation.get("count") or 0)
         for key in style_totals:
             style_totals[key] += int((result.debug.style or {}).get(key) or 0)
 
@@ -385,6 +394,7 @@ def main(argv: Optional[list] = None) -> int:
         f"{capacity['questions_per_day']} questions/day"
     )
     print(f"truncated_answers={truncated_answers}")
+    print(f"negation_sentences_total={negation_total}")
     print(f"style_totals={_json(style_totals)}")
     print(
         f"cached_tokens={cached_tokens}"

@@ -48,6 +48,7 @@ from core.guardrails import (
     detect_privacy_request,
 )
 from core.llm_client import LLMClient, LLMRateLimitError
+from core.negation import negation_sentences, point_negation_counts
 from core.tokens import EstimatorTokenCounter
 from core.retriever import Retriever, RetrievedChunk
 from core.sanitizer import sanitize_answer
@@ -100,6 +101,8 @@ class DebugInfo:
     coverage: str = ""
     # Exact context text the answer model received (developer evidence only).
     context_text: str = ""
+    # Non-blocking negation metric (fix pack K2). Samples stay developer-only.
+    negation: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -126,6 +129,7 @@ class DebugInfo:
             "style": self.style,
             "coverage": self.coverage,
             "context_text": self.context_text,
+            "negation": self.negation,
         }
 
 
@@ -286,6 +290,7 @@ class RagPipeline:
             "style": {},
             "coverage": "",
             "context_text": "",
+            "negation": {},
         }
 
         def result(
@@ -319,6 +324,7 @@ class RagPipeline:
                 style=dict(state["style"]),
                 coverage=state["coverage"],
                 context_text=state["context_text"],
+                negation=dict(state["negation"]),
             )
             logger.info(
                 "chat_request status=%s mode=%s route=%s chunks=%d latency_ms=%.1f "
@@ -670,6 +676,13 @@ class RagPipeline:
 
         answer_text = compare_answer.render_answer(validation)
         state["style"] = citation_style_metrics(answer_text)
+        state["negation"] = {
+            **negation_sentences(answer_text),
+            "per_point": point_negation_counts(
+                [point.text for section in validation.sections for point in section.points]
+                + [point.text for point in validation.differences]
+            ),
+        }
 
         coverage_line = self._coverage_line(
             state, bundle, chunks, validation.cited_report_ids
@@ -817,6 +830,10 @@ class RagPipeline:
         answer_text = guarded.text
         if truncated:
             answer_text = f"{answer_text}\n\n{prompts.TRUNCATION_NOTICE}"
+
+        # Fix pack K2: measured on the answer body, before the backend coverage
+        # line and Sumber block, which are not model statements.
+        state["negation"] = negation_sentences(answer_text)
 
         coverage_line = self._coverage_line(
             state, bundle, chunks, citations.cited_report_ids

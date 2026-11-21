@@ -723,6 +723,24 @@ COMPARE_CITATION_JOINER = ", "
 COMPARE_SECTION_SEPARATOR = "\n\n"
 COMPARE_LINE_SEPARATOR = "\n"
 
+# Non-blocking negation metric (fix pack K2). It only measures; it never changes
+# an answer. A sentence counts when it contains a negation marker AND one of the
+# subject markers, e.g. "Tim belum melakukan simulasi" or "tidak ada anggota yang
+# pasif" (the second is legitimate, which is why this is not a guardrail).
+NEGATION_MARKERS = ("tidak", "belum", "kurang", "tanpa", "tak", "bukan")
+NEGATION_SUBJECT_MARKERS = (
+    "tim",
+    "laporan",
+    "kelompok",
+    "finalis",
+    "juara",
+    "peserta",
+    "anggota",
+    "mahasiswa",
+)
+NEGATION_SAMPLE_LIMIT = 5
+NEGATION_SENTENCE_SPLIT_PATTERN = r"(?<=[.!?])\s+"
+
 # Operational logging for the app layer (metadata only).
 APP_LOG_FILE_PREFIX = "app"
 PYTHON_MIN_SQLITE_VERSION = (3, 35, 0)

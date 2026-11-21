@@ -104,6 +104,12 @@ python scripts/smoke_groq.py --chroma-dir chroma_db --delay 20     # smoke Groq 
 # Opsi: --only id_route,catalog  --show-raw  --show-context  --token-budget 30000  --answer-effort low
 ```
 
+## Catatan kuota
+
+Penghitung kuota per sesi dan limiter token Groq hidup **di memori proses**:
+restart atau sleep Streamlit Cloud mereset keduanya. Kendali yang sebenarnya adalah
+kuota akun Groq (8.000 TPM / 200.000 TPD), bukan penghitung sesi ini.
+
 ## Catatan SQLite
 
 `chromadb` membutuhkan SQLite ≥ 3.35. Di Linux yang SQLite-nya lebih lama, `pysqlite3-binary`

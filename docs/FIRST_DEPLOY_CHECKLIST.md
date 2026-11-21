@@ -170,6 +170,9 @@ Tekan **Deploy**. Streamlit Cloud memasang `requirements.txt` saja, lalu menjala
    "tunggu"; setelah 10 pertanyaan dalam satu jam → pesan batas jam; setelah 15
    pertanyaan dalam sehari → pesan batas harian. Ini penghitung **per sesi browser**,
    jadi beberapa tab/pengguna bisa melewatinya; lihat catatan risiko.
+   **Catatan:** penghitung kuota sesi dan limiter token Groq disimpan **di memori
+   proses**. Restart atau sleep Streamlit Cloud mereset keduanya, sehingga batas
+   harian tidak bertahan setelah aplikasi tidur; kendali nyata tetap kuota akun Groq.
 5. **Pesan antrean**: bila layanan Groq sedang lambat (lebih dari 3 detik menunggu),
    status pemrosesan menampilkan "Sedang mengantre karena batas layanan, perkiraan
    tunggu ~N detik."
