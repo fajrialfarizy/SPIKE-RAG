@@ -36,6 +36,7 @@ import config
 from core.knowledge_base import KnowledgeBase, KnowledgeBaseError
 from core.llm_client import GroqLLMClient
 from core.pipeline import RagPipeline, configure_file_logging
+from core.rate_limiter import get_token_limiter
 from core.warmup import WarmupError, warm_up_embedder
 from ingestion.embedder import E5Embedder
 
@@ -95,6 +96,25 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         help="Seconds to wait between questions (default %(default)s).",
     )
     parser.add_argument(
+        "--only",
+        default=None,
+        help="Comma-separated scenario names to run (default: every scenario).",
+    )
+    parser.add_argument(
+        "--token-budget",
+        type=int,
+        default=config.SMOKE_DEFAULT_TOKEN_BUDGET,
+        help=(
+            "Stop before the cumulative token count reaches this value "
+            "(default %(default)s)."
+        ),
+    )
+    parser.add_argument(
+        "--show-raw",
+        action="store_true",
+        help="Print the raw model output of every answer attempt (dummy data only).",
+    )
+    parser.add_argument(
         "--answer-effort",
         choices=config.ANSWER_REASONING_EFFORT_VALUES,
         default=config.ANSWER_REASONING_EFFORT,
@@ -138,6 +158,22 @@ def print_analyzer(analyzer: dict) -> None:
     print(f"  raw={raw[:400]}")
 
 
+def print_raw_answers(raw_answers: Sequence[dict]) -> None:
+    if not raw_answers:
+        print("raw_answers: (none)")
+        return
+    print(f"raw_answers: {len(raw_answers)} attempt(s)")
+    for item in raw_answers:
+        print(
+            f"  -- attempt={item.get('attempt')} "
+            f"finish_reason={item.get('finish_reason')} "
+            f"completion_tokens={item.get('completion_tokens')} "
+            f"reasoning_tokens={item.get('reasoning_tokens')} "
+            f"chars={item.get('content_chars')}"
+        )
+        print(item.get("content") or "")
+
+
 def print_calls(calls: Sequence[dict]) -> None:
     if not calls:
         print("model_calls: (none)")
@@ -159,6 +195,22 @@ def print_score_summary(top1_scores: Sequence[float]) -> None:
     print(f"min={min(top1_scores):.4f}")
     print(f"median={statistics.median(top1_scores):.4f}")
     print(f"max={max(top1_scores):.4f}")
+
+
+def select_scenarios(only: Optional[str]) -> List[Tuple[str, str]]:
+    """Filter the scenario table by name, preserving the documented order."""
+    if not only:
+        return list(SMOKE_SCENARIOS)
+
+    names = [name.strip() for name in only.split(",") if name.strip()]
+    known = {name for name, _ in SMOKE_SCENARIOS}
+    unknown = [name for name in names if name not in known]
+    if unknown:
+        raise SystemExit(
+            f"ERROR: unknown scenario(s): {', '.join(unknown)}. "
+            f"Known: {', '.join(name for name, _ in SMOKE_SCENARIOS)}"
+        )
+    return [item for item in SMOKE_SCENARIOS if item[0] in names]
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -202,11 +254,16 @@ def main(argv: Optional[list] = None) -> int:
         answer_reasoning_effort=args.answer_effort,
     )
 
-    scenarios = SMOKE_SCENARIOS[: args.limit]
+    scenarios = select_scenarios(args.only)[: args.limit]
+    daily_limit = int(config.GROQ_LIMITS["tokens_per_day"])
     top1_scores: List[float] = []
+    cumulative_tokens = 0
+    truncated_answers = 0
+    style_totals = {"mid_sentence_citations": 0, "unbalanced_parentheses": 0}
     print(
         f"model={config.LLM_MODEL_NAME} answer_effort={args.answer_effort} "
-        f"questions={len(scenarios)} delay={args.delay}s",
+        f"questions={len(scenarios)} delay={args.delay}s "
+        f"token_budget={args.token_budget} daily_tokens={daily_limit}",
         flush=True,
     )
 
@@ -231,6 +288,12 @@ def main(argv: Optional[list] = None) -> int:
         print_calls(result.debug.calls)
         print(f"total_tokens={_json(result.debug.token_usage)}")
         print(
+            f"style={_json(result.debug.style)} "
+            f"incidents={_json(result.debug.incidents)}"
+        )
+        if args.show_raw:
+            print_raw_answers(result.debug.raw_answers)
+        print(
             f"context_dropped={_json(result.debug.context_dropped_chunk_ids)} "
             f"cited={result.cited_report_ids} "
             f"pipeline_latency_ms={result.debug.latency_ms} wall_ms={wall_ms}",
@@ -243,8 +306,30 @@ def main(argv: Optional[list] = None) -> int:
             if top_score is not None:
                 top1_scores.append(float(top_score))
 
-        daily_limit = (result.debug.incidents or {}).get("daily_limit")
-        if daily_limit:
+        question_tokens = int(result.debug.token_usage.get("total_tokens") or 0)
+        cumulative_tokens += question_tokens
+        truncated_answers += int(
+            (result.debug.incidents or {}).get("answer_truncated") or 0
+        )
+        for key in style_totals:
+            style_totals[key] += int((result.debug.style or {}).get(key) or 0)
+
+        print(
+            f"cumulative_tokens={cumulative_tokens} "
+            f"({100.0 * cumulative_tokens / daily_limit:.1f}% of the daily limit)",
+            flush=True,
+        )
+
+        if cumulative_tokens >= args.token_budget:
+            print(
+                f"\nSTOP: cumulative tokens {cumulative_tokens} reached the "
+                f"--token-budget {args.token_budget}.",
+                flush=True,
+            )
+            break
+
+        daily_exhausted = (result.debug.incidents or {}).get("daily_limit")
+        if daily_exhausted:
             print(
                 "\nSTOP: the provider reported a daily-style rate limit "
                 f"(error_type={result.debug.error_type}). Waiting will not help "
@@ -260,6 +345,23 @@ def main(argv: Optional[list] = None) -> int:
             time.sleep(args.delay)
 
     print_score_summary(top1_scores)
+
+    answered = max(1, len(scenarios))
+    average = cumulative_tokens / answered
+    capacity = get_token_limiter().capacity_estimate(average)
+    print("\n=== token summary")
+    print(f"questions_run={len(scenarios)}")
+    print(f"cumulative_tokens={cumulative_tokens}")
+    print(f"average_tokens_per_question={average:.0f}")
+    print(f"daily_limit={daily_limit}")
+    print(f"percent_of_daily_limit={100.0 * cumulative_tokens / daily_limit:.1f}%")
+    print(
+        "capacity_at_average: "
+        f"{capacity['questions_per_minute']} questions/min, "
+        f"{capacity['questions_per_day']} questions/day"
+    )
+    print(f"truncated_answers={truncated_answers}")
+    print(f"style_totals={_json(style_totals)}")
     return 0
 
 
