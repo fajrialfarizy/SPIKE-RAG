@@ -157,6 +157,8 @@ def print_analyzer(analyzer: dict) -> None:
     print(
         f"analyzer: used_fallback={analyzer.get('used_fallback')} "
         f"latency_ms={analyzer.get('latency_ms')} "
+        f"queue_wait_ms={analyzer.get('queue_wait_ms')} "
+        f"model_latency_ms={analyzer.get('model_latency_ms')} "
         f"tokens={_json(analyzer.get('usage') or {})}"
     )
     print(f"  filters_before_validation={_json(analyzer.get('filters_before_validation'))}")
@@ -194,6 +196,8 @@ def print_calls(calls: Sequence[dict]) -> None:
             f"model_latency_ms={call.get('model_latency_ms', 'n/a')} "
             f"attempts={call.get('attempts')} tokens={_json(call.get('usage') or {})}"
         )
+        if call.get("reservation"):
+            print(f"    limiter={_json(call['reservation'])}")
 
 
 def print_score_summary(top1_scores: Sequence[float]) -> None:
@@ -297,6 +301,7 @@ def main(argv: Optional[list] = None) -> int:
         print(f"compare_by={result.debug.compare_by} groups={_json(result.debug.groups)}")
         print_analyzer(result.debug.analyzer)
         print(f"embedding_latency_ms={result.debug.embedding_latency_ms}")
+        print(f"context_tokens_saved={result.debug.context_tokens_saved}")
         print_retrieved(result.debug.retrieved)
         print_calls(result.debug.calls)
         print(f"total_tokens={_json(result.debug.token_usage)}")

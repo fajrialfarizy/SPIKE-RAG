@@ -79,6 +79,11 @@ def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
         action="store_true",
         help="Print the bookkeeping only, not the context blocks.",
     )
+    parser.add_argument(
+        "--show-chunk-edges",
+        action="store_true",
+        help="Print the first and last characters of each kept chunk body.",
+    )
     return parser.parse_args(argv)
 
 
@@ -151,6 +156,16 @@ def main(argv: Optional[list] = None) -> int:
             f"group={label} section={chunk.metadata.get('section_type')} "
             f"score={score} {kept}"
         )
+
+    if args.show_chunk_edges:
+        print("chunk_edges:")
+        for chunk in chunks:
+            if chunk.chunk_id in dropped:
+                continue
+            body = chunk.document.split("\n\n", 1)[-1].strip()
+            print(f"  - {chunk.chunk_id}")
+            print(f"      start: {body[:80]!r}")
+            print(f"      end  : {body[-80:]!r}")
 
     print("alias_map:")
     for alias, report_id in bundle.alias_map.items():

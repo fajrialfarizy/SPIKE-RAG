@@ -37,7 +37,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional
 
 import config
@@ -128,6 +128,10 @@ class LLMResult:
     queue_wait_ms: float = 0.0
     model_latency_ms: float = 0.0
 
+    # Fix pack L5b: what the token limiter saw when this call reserved its
+    # budget, so a long wait can be explained from the run output.
+    reservation: Dict[str, Any] = field(default_factory=dict)
+
     def to_metrics(self, name: str) -> Dict[str, Any]:
         return {
             "name": name,
@@ -137,6 +141,7 @@ class LLMResult:
             "attempts": self.attempts,
             "usage": self.usage.to_dict(),
             "finish_reason": self.finish_reason,
+            "reservation": dict(self.reservation),
         }
 
 
@@ -479,12 +484,12 @@ class GroqLLMClient(LLMClient):
         user_prompt: str,
         max_tokens: int,
         deadline: Optional[Deadline],
-    ) -> list:
+    ) -> tuple:
         """Reserve this call's estimated tokens or turn the refusal into a 429."""
         limiter = self.token_limiter
         estimate = limiter.estimate_tokens(system_prompt, user_prompt, max_tokens)
         try:
-            return limiter.reserve(estimate, deadline)
+            return limiter.reserve(estimate, deadline), estimate
         except DailyTokenBudgetExhausted as exc:
             logger.warning("llm_token_budget_exhausted window=daily")
             raise LLMRateLimitError(
@@ -534,9 +539,16 @@ class GroqLLMClient(LLMClient):
                 response_format,
             )
             wait_started = self._clock()
-            reservation = self._reserve_tokens(
+            tokens_before = self.token_limiter.snapshot()["tokens_used_this_minute"]
+            reservation, estimate = self._reserve_tokens(
                 system_prompt, user_prompt, max_tokens, deadline
             )
+            reservation_info = {
+                "tokens_used_last_60s": tokens_before,
+                "estimated_tokens": estimate,
+                "wait_seconds": round(self._clock() - wait_started, 2),
+                "capacity_tokens_per_minute": self.token_limiter.tokens_per_minute,
+            }
             try:
                 with self.limiter.slot(deadline):
                     queue_wait_ms += (self._clock() - wait_started) * 1000.0
@@ -545,6 +557,13 @@ class GroqLLMClient(LLMClient):
                     model_latency_ms += (self._clock() - model_started) * 1000.0
                 result = self._extract(response)
                 self.token_limiter.record(reservation, result.usage.total)
+                # The estimate is replaced by the reported usage; the unused part
+                # returns to the minute window and is never billed again.
+                reservation_info["reserved_tokens"] = estimate
+                reservation_info["actual_tokens"] = result.usage.total
+                reservation_info["unused_released"] = max(
+                    0, estimate - int(result.usage.total)
+                )
                 return LLMResult(
                     content=result.content,
                     usage=result.usage,
@@ -553,6 +572,7 @@ class GroqLLMClient(LLMClient):
                     finish_reason=result.finish_reason,
                     queue_wait_ms=queue_wait_ms,
                     model_latency_ms=model_latency_ms,
+                    reservation=reservation_info,
                 )
             except LLMError:
                 self.token_limiter.release(reservation)
