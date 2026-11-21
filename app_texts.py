@@ -48,6 +48,9 @@ COOLDOWN = "Tunggu {seconds} detik sebelum mengirim pertanyaan berikutnya."
 HOURLY_LIMIT = (
     "Batas pertanyaan per jam untuk sesi ini sudah tercapai. Coba lagi nanti."
 )
+# Mirrors core.prompts.DAILY_QUOTA_RESPONSE (the pipeline owns that text); kept
+# here so the UI strings stay in one reviewable file.
+DAILY_QUOTA = "Kuota harian layanan sedang habis. Silakan coba lagi besok."
 EMPTY_QUESTION = "Tulis pertanyaan terlebih dahulu."
 TECHNICAL_ERROR = (
     "Maaf, terjadi kendala teknis saat memuat aplikasi. Silakan muat ulang "

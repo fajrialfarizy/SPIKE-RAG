@@ -156,11 +156,10 @@ def test_cross_report_answer_cites_both_reports():
     assert result.debug.mode == "cross_report"
 
 
-def test_catalog_mode_never_embeds_and_lists_reports():
+def test_catalog_mode_is_rendered_by_the_backend_without_an_answer_call():
     pipeline, llm, _, embedder = build(
         metadatas=[metadata("RPT0001"), metadata("RPT0003", competition_type="Essay")],
         json_responses=[analysis(mode="catalog", query="daftar jenis kompetisi")],
-        text_responses=["Tersedia laporan Business Plan [LAP1] dan Essay [LAP2]."],
     )
 
     result = pipeline.run("Apa saja jenis kompetisi yang pernah diikuti?")
@@ -168,9 +167,14 @@ def test_catalog_mode_never_embeds_and_lists_reports():
     assert result.status is AnswerStatus.ANSWERED
     assert result.debug.route == "catalog"
     assert embedder.queries == []
-    assert result.cited_report_ids == ["RPT0001", "RPT0003"]
-    assert "<daftar_laporan>" in llm.calls[1]["user_prompt"]
-    assert "Mode jawab: catalog" in llm.calls[1]["user_prompt"]
+    # Fix pack G5: the analyzer still runs, the answer model does not.
+    assert llm.json_call_count == 1
+    assert llm.text_call_count == 0
+    assert result.cited_report_ids == []
+    assert "Tersedia 2 laporan evaluasi kompetisi." in result.answer
+    assert "- RPT0001 — Inovasi Bisnis Mahasiswa Nasional (IBMN) 2023 (Business Plan, 2023, Finalis)" in result.answer
+    assert "- Jenis kompetisi: Business Plan (1); Essay (1)" in result.answer
+    assert "**Sumber**" not in result.answer
 
 
 def test_id_route_skips_the_analyzer_entirely():

@@ -14,7 +14,7 @@ Guarantees:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Sequence
 
 import config
@@ -45,6 +45,8 @@ class RetrievedChunk:
     document: str
     metadata: Dict[str, Any]
     score: Optional[float] = None
+    # Set only by retrieve_grouped, so the context can label the group.
+    group_label: Optional[str] = None
 
 
 def merge_filter_dicts(
@@ -262,7 +264,7 @@ class Retriever:
                 if chunk.chunk_id in seen:
                     continue
                 seen.add(chunk.chunk_id)
-                merged.append(chunk)
+                merged.append(replace(chunk, group_label=group["label"]))
 
         return merged, status
 

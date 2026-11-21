@@ -173,11 +173,13 @@ class FakeLLM(LLMClient):
         text_responses: Optional[List[str]] = None,
         fail_with: Optional[BaseException] = None,
         usage: Optional[TokenUsage] = None,
+        text_finish_reasons: Optional[List[Optional[str]]] = None,
     ):
         self.json_responses = list(json_responses or [])
         self.text_responses = list(text_responses or [])
         self.fail_with = fail_with
         self.usage = usage or TokenUsage()
+        self.text_finish_reasons = list(text_finish_reasons or [])
         self.calls: List[Dict[str, Any]] = []
 
     def complete(
@@ -209,7 +211,15 @@ class FakeLLM(LLMClient):
         queue = self.json_responses if json_mode else self.text_responses
         if not queue:
             raise LLMResponseError("FakeLLM has no scripted response left")
-        return LLMResult(content=queue.pop(0), usage=self.usage, latency_ms=0.0)
+        finish_reason = None
+        if not json_mode and self.text_finish_reasons:
+            finish_reason = self.text_finish_reasons.pop(0)
+        return LLMResult(
+            content=queue.pop(0),
+            usage=self.usage,
+            latency_ms=0.0,
+            finish_reason=finish_reason,
+        )
 
     @property
     def json_call_count(self) -> int:

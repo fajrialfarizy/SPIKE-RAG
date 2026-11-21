@@ -77,9 +77,16 @@ def test_standard_response_map_covers_every_status():
         "technical_error",
         "no_source",
         "rate_limited",
+        "daily_quota",
         "privacy_refused",
         "security_refused",
     }
+
+
+def test_the_app_daily_quota_text_matches_the_pipeline_text():
+    import app_texts
+
+    assert app_texts.DAILY_QUOTA == prompts.DAILY_QUOTA_RESPONSE
 
 
 def test_citation_addendum_defines_alias_rules():

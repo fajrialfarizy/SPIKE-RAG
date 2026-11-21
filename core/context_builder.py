@@ -52,6 +52,17 @@ def _alias_for(index: int) -> str:
     return f"{config.CONTEXT_ALIAS_PREFIX}{index}"
 
 
+def _group_label(chunk: RetrievedChunk) -> Any:
+    """Comparison group of a chunk, when retrieval was grouped."""
+    return getattr(chunk, "group_label", None)
+
+
+def _section_label(section_type: Any) -> str:
+    """Human-readable section name next to the raw section key."""
+    key = str(section_type or "")
+    return config.SECTION_TYPE_LABELS.get(key, key)
+
+
 def _neutralize_delimiters(text: str) -> str:
     """Stop document text from closing or reopening the data delimiter."""
     return text.replace("</dokumen>", "(/dokumen)").replace(
@@ -68,6 +79,7 @@ class ContextBuilder:
         report_metadata: Dict[str, Dict[str, Any]] = {}
         chunk_ids: List[str] = []
         blocks: List[str] = []
+        current_group: Any = None
 
         for chunk in chunks:
             report_id = chunk.report_id
@@ -85,6 +97,19 @@ class ContextBuilder:
 
             alias = alias_by_report[report_id]
             metadata = chunk.metadata
+
+            group = _group_label(chunk)
+            if group != current_group:
+                if current_group is not None:
+                    blocks.append(config.CONTEXT_GROUP_CLOSE_TAG)
+                if group is not None:
+                    blocks.append(
+                        config.CONTEXT_GROUP_OPEN_TEMPLATE.format(
+                            label=_attribute(group)
+                        )
+                    )
+                current_group = group
+
             opening = config.CONTEXT_DOCUMENT_OPEN_TEMPLATE.format(
                 alias=alias,
                 competition_name=_attribute(metadata.get("competition_name")),
@@ -92,12 +117,23 @@ class ContextBuilder:
                 competition_year=_attribute(metadata.get("competition_year")),
                 achievement_level=_attribute(metadata.get("achievement_level")),
                 section_type=_attribute(metadata.get("section_type")),
+                section_label=_attribute(_section_label(metadata.get("section_type"))),
+                group_attribute=(
+                    config.CONTEXT_GROUP_ATTRIBUTE_TEMPLATE.format(
+                        label=_attribute(group)
+                    )
+                    if group is not None
+                    else ""
+                ),
             )
             blocks.append(
                 f"{opening}\n{_neutralize_delimiters(chunk.document)}\n"
                 f"{config.CONTEXT_DOCUMENT_CLOSE_TAG}"
             )
             chunk_ids.append(chunk.chunk_id)
+
+        if current_group is not None:
+            blocks.append(config.CONTEXT_GROUP_CLOSE_TAG)
 
         return ContextBundle(
             text=config.CONTEXT_DOCUMENT_SEPARATOR.join(blocks),
@@ -139,12 +175,27 @@ class ContextBuilder:
                 )
 
             per_report: Dict[str, int] = {}
+            per_group: Dict[Any, int] = {}
             for chunk in remaining:
                 per_report[chunk.report_id] = per_report.get(chunk.report_id, 0) + 1
+                group = _group_label(chunk)
+                if group is not None:
+                    per_group[group] = per_group.get(group, 0) + 1
+
+            # Grouped comparisons: never remove the last chunk of a group, so the
+            # answer always keeps both sides of the comparison.
+            pool = remaining
+            if per_group:
+                pool = [
+                    chunk
+                    for chunk in remaining
+                    if per_group.get(_group_label(chunk), 0) > 1
+                ] or remaining
+
             removable = [
-                chunk for chunk in remaining if per_report[chunk.report_id] > 1
+                chunk for chunk in pool if per_report[chunk.report_id] > 1
             ]
-            pool = removable or remaining
+            pool = removable or pool
             victim = min(pool, key=lambda chunk: (chunk.score or 0.0, chunk.chunk_id))
             remaining.remove(victim)
 

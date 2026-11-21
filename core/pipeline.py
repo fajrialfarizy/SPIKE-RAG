@@ -26,8 +26,10 @@ from typing import Any, Dict, List, Optional
 import config
 from core import prompts
 from core.analyzer import Analyzer
+from core.catalog import render_catalog_answer
 from core.citations import (
     build_source_block,
+    citation_style_metrics,
     compose_answer,
     find_uncited_mentions,
     process_citations,
@@ -43,6 +45,7 @@ from core.llm_client import LLMClient, LLMRateLimitError
 from core.tokens import EstimatorTokenCounter
 from core.retriever import Retriever, RetrievedChunk
 from core.sanitizer import sanitize_answer
+from core.truncation import trim_to_last_complete_unit
 from enums import QueryMode
 from ingestion.embedder import E5Embedder
 
@@ -83,6 +86,10 @@ class DebugInfo:
     groups: List[Dict[str, Any]] = field(default_factory=list)
     embedding_latency_ms: float = 0.0
     deadline_budget_seconds: float = 0.0
+    # Raw model output per answer attempt. Developer-only evidence for the smoke
+    # run: never rendered, never written to a log line.
+    raw_answers: List[Dict[str, Any]] = field(default_factory=list)
+    style: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -105,6 +112,8 @@ class DebugInfo:
             "groups": self.groups,
             "embedding_latency_ms": self.embedding_latency_ms,
             "deadline_budget_seconds": self.deadline_budget_seconds,
+            "raw_answers": self.raw_answers,
+            "style": self.style,
         }
 
 
@@ -253,6 +262,8 @@ class RagPipeline:
             "compare_by": None,
             "groups": [],
             "embedding_latency_ms": 0.0,
+            "raw_answers": [],
+            "style": {},
         }
 
         def result(
@@ -282,6 +293,8 @@ class RagPipeline:
                 groups=list(state["groups"]),
                 embedding_latency_ms=state["embedding_latency_ms"],
                 deadline_budget_seconds=self.deadline_budget_seconds,
+                raw_answers=list(state["raw_answers"]),
+                style=dict(state["style"]),
             )
             logger.info(
                 "chat_request status=%s mode=%s route=%s chunks=%d latency_ms=%.1f "
@@ -347,7 +360,7 @@ class RagPipeline:
                     return result(AnswerStatus.NOT_FOUND, prompts.NOT_FOUND_RESPONSE)
                 return self._compose_answer(
                     result, state, chunks, text, QueryMode.SPECIFIC, catalog=None,
-                    deadline=deadline,
+                    deadline=deadline, id_route=True,
                 )
 
             # 4. Analyzer.
@@ -405,7 +418,7 @@ class RagPipeline:
                     analysis.compare_by,
                 )
                 state["groups"] = groups
-                hint_extra = prompts.build_group_hint(groups)
+                hint_extra = prompts.build_group_hint(groups, analysis.compare_by)
                 logger.info(
                     "chat_compare_by grouping=%s groups=%d chunks=%d",
                     analysis.compare_by,
@@ -429,12 +442,19 @@ class RagPipeline:
             )
 
         except LLMRateLimitError as exc:
-            if getattr(exc, "is_daily_limit", False):
+            is_daily = bool(getattr(exc, "is_daily_limit", False))
+            if is_daily:
                 state["incidents"]["daily_limit"] = 1
-            logger.warning("chat_failed error_type=%s", type(exc).__name__)
+            logger.warning(
+                "chat_failed error_type=%s daily_limit=%s",
+                type(exc).__name__,
+                is_daily,
+            )
             return result(
                 AnswerStatus.RATE_LIMITED,
-                prompts.RATE_LIMITED_RESPONSE,
+                prompts.DAILY_QUOTA_RESPONSE
+                if is_daily
+                else prompts.RATE_LIMITED_RESPONSE,
                 error_type=type(exc).__name__,
             )
         except DeadlineExceeded as exc:
@@ -454,6 +474,19 @@ class RagPipeline:
             )
 
     # -- answer construction ----------------------------------------------
+    @staticmethod
+    def _raw_answer(attempt: int, completion: Any) -> Dict[str, Any]:
+        """Debug-only evidence of one answer attempt (never logged, never shown)."""
+        usage = completion.usage
+        return {
+            "attempt": attempt,
+            "content": completion.content,
+            "finish_reason": completion.finish_reason,
+            "completion_tokens": usage.completion_tokens,
+            "reasoning_tokens": usage.reasoning_tokens,
+            "content_chars": len(completion.content or ""),
+        }
+
     def _compose_answer(
         self,
         result,
@@ -464,24 +497,42 @@ class RagPipeline:
         catalog: Optional[List[Dict[str, Any]]],
         deadline: Optional[Deadline] = None,
         hint_extra: str = "",
+        id_route: bool = False,
     ) -> RagResult:
         if catalog is not None:
-            bundle = self.context_builder.build_catalog(catalog)
-        else:
-            bundle, dropped = self.context_builder.build_chunks_within_budget(
-                chunks, self.token_counter, self.max_context_tokens
-            )
-            state["context_dropped_chunk_ids"] = dropped
+            # Fix pack G5: the catalog answer is backend-rendered. The analyzer
+            # already ran for scope and filters; no answer-LLM call is made and
+            # the list itself is the source, so no Sumber block is attached.
+            state["retrieved"] = []
+            state["alias_map"] = {}
+            answer = render_catalog_answer(catalog)
+            state["style"] = citation_style_metrics(answer)
+            return result(AnswerStatus.ANSWERED, answer, cited=[])
 
+        bundle, dropped = self.context_builder.build_chunks_within_budget(
+            chunks, self.token_counter, self.max_context_tokens
+        )
+        state["context_dropped_chunk_ids"] = dropped
         state["alias_map"] = bundle.alias_map
         state["retrieved"] = self._retrieved_debug(chunks)
         retrieved_ids = list(bundle.report_metadata)
+
+        if id_route:
+            # The question names a report id; the model only knows the alias, so
+            # say explicitly that the identifier refers to the shown document.
+            hint_extra = prompts.build_id_route_hint(bundle.alias_map)
 
         completion = self._answer_with_llm(
             bundle.text, question, mode, deadline=deadline, hint_extra=hint_extra
         )
         state["calls"].append(completion.to_metrics("answer"))
+        state["raw_answers"].append(self._raw_answer(1, completion))
         answer_text = sanitize_answer(completion.content)
+
+        truncated = completion.finish_reason == "length"
+        if truncated:
+            state["incidents"]["answer_truncated"] = 1
+            answer_text = trim_to_last_complete_unit(answer_text)
 
         def resolve(raw_answer: str):
             citations = process_citations(
@@ -495,8 +546,10 @@ class RagPipeline:
             return citations, missing
 
         citations, uncited = resolve(answer_text)
-        if not citations.cited_report_ids or uncited:
-            # One stricter attempt before giving up (Brief 5.6).
+        if (not citations.cited_report_ids or uncited) and not truncated:
+            # One stricter attempt before giving up (Brief 5.6). A truncated
+            # answer already spent the completion cap, so it is not retried: the
+            # repair is the deterministic trim above.
             retry_prompt = (
                 f"{self._answer_user_prompt(bundle.text, question, mode, hint_extra=hint_extra)}"
                 f"\n\n{prompts.CITATION_RETRY_INSTRUCTION}"
@@ -511,7 +564,12 @@ class RagPipeline:
                 deadline=deadline,
             )
             state["calls"].append(retry_completion.to_metrics("answer_retry"))
+            state["raw_answers"].append(self._raw_answer(2, retry_completion))
             answer_text = sanitize_answer(retry_completion.content)
+            truncated = retry_completion.finish_reason == "length"
+            if truncated:
+                state["incidents"]["answer_truncated"] = 1
+                answer_text = trim_to_last_complete_unit(answer_text)
             citations, uncited = resolve(answer_text)
 
         for key, value in citations.incidents.items():
@@ -532,10 +590,16 @@ class RagPipeline:
             # A blocked answer carries no source block, so it claims no sources.
             return result(AnswerStatus.SECURITY_REFUSED, guarded.text, cited=[])
 
+        state["style"] = citation_style_metrics(guarded.text)
+
+        answer_text = guarded.text
+        if truncated:
+            answer_text = f"{answer_text}\n\n{prompts.TRUNCATION_NOTICE}"
+
         source_block = build_source_block(
             citations.cited_report_ids, bundle.report_metadata
         )
-        final_answer = compose_answer(guarded.text, source_block)
+        final_answer = compose_answer(answer_text, source_block)
 
         return result(
             AnswerStatus.ANSWERED, final_answer, cited=citations.cited_report_ids

@@ -26,7 +26,12 @@ EMBEDDING_WARMUP_QUERY = "pemanasan model embedding"
 LLM_MODEL_NAME = "openai/gpt-oss-20b"
 LLM_TEMPERATURE_ANALYZER = 0.0
 LLM_TEMPERATURE_CHAT = 0.2
-LLM_MAX_OUTPUT_TOKENS = 1024
+# Answer completion cap. Data from the supervisor's 2026-11-21 run: answer
+# completions were 185-1,024 tokens, 159-525 of them reasoning, and one answer
+# hit the old 1,024 cap. With ANSWER_REASONING_EFFORT="low" (~160-250 reasoning
+# tokens observed), a ~200-word Indonesian answer is ~300 tokens, so 800 leaves
+# room for reasoning plus the whole answer without paying for a long answer.
+LLM_MAX_OUTPUT_TOKENS = 800
 LLM_MAX_RETRIES = 3
 LLM_RETRY_BACKOFF_FACTOR = 2.0
 # Per-call provider timeout. Bounded further by the remaining pipeline budget.
@@ -269,9 +274,10 @@ CORE_LOG_FILE_PREFIX = "chat"
 LLM_API_KEY_ENV_VAR = "GROQ_API_KEY"
 LLM_INCLUDE_REASONING = False
 LLM_REASONING_EFFORT_ANALYZER = "low"
-# Answer reasoning effort (report F1f). Default stays "medium"; the smoke
-# script can override it for a comparison run.
-ANSWER_REASONING_EFFORT = "medium"
+# Answer reasoning effort (report F1f). Measured on 2026-11-21: answers spent
+# 159-525 reasoning tokens at "medium". "low" keeps that out of the token
+# budget; the smoke script can still override it for a comparison run.
+ANSWER_REASONING_EFFORT = "low"
 ANSWER_REASONING_EFFORT_VALUES = ("low", "medium", "high")
 # Where the instruction block goes. "system" (default) keeps a system message;
 # "user_prefixed" puts the same text at the start of the user message. Only an
@@ -293,10 +299,13 @@ LLM_MAX_CONCURRENT_CALLS = 2
 
 # Context token budget (report F1d). Chunks are dropped lowest-score first until
 # the rendered context fits, keeping one chunk per selected report when possible.
-MAX_CONTEXT_TOKENS = 3500
+# Reduced from 3,500 after the 2026-11-21 quota data: an 8,000 TPM / 200,000 TPD
+# account cannot afford ~2,000-token contexts. 2,500 tokens still fits about six
+# 350-450-token chunks.
+MAX_CONTEXT_TOKENS = 2500
 CONTEXT_TOKEN_ESTIMATOR_CHARS_PER_TOKEN = 2.5
 # Concise-answer target for the addendum (catalog mode excepted).
-ANSWER_TARGET_WORDS = 250
+ANSWER_TARGET_WORDS = 200
 
 # Analyzer (LLM call #1)
 ANALYZER_MAX_SEARCH_QUERY_CHARS = 300
@@ -422,9 +431,14 @@ CITATION_ALIAS_WORD = "LAP"
 CONTEXT_DOCUMENT_OPEN_TEMPLATE = (
     '<dokumen id={alias} kompetisi="{competition_name}" jenis="{competition_type}" '
     'tahun="{competition_year}" pencapaian="{achievement_level}" '
-    'bagian="{section_type}">'
+    'bagian="{section_type}" bagian_label="{section_label}"{group_attribute}>'
 )
 CONTEXT_DOCUMENT_CLOSE_TAG = "</dokumen>"
+# Grouped comparison mode wraps documents in an explicit group block, so the
+# answer model never has to guess which team belongs to which group.
+CONTEXT_GROUP_OPEN_TEMPLATE = '<kelompok nama="{label}">'
+CONTEXT_GROUP_CLOSE_TAG = "</kelompok>"
+CONTEXT_GROUP_ATTRIBUTE_TEMPLATE = ' kelompok="{label}"'
 CONTEXT_DOCUMENT_SEPARATOR = "\n\n"
 CONTEXT_CATALOG_OPEN_TAG = "<daftar_laporan>"
 CONTEXT_CATALOG_CLOSE_TAG = "</daftar_laporan>"
@@ -446,6 +460,10 @@ PATTERN_ALIAS_SINGLE = re.compile(
 # is case-insensitive on purpose: a variant the substitution does not understand
 # must fail loudly instead of reaching the student.
 PATTERN_ALIAS_ANY = re.compile(r"\bLAP[0-9]{1,3}\b", re.IGNORECASE)
+# Spacing normalization before a resolved citation: "di[RPT0001]" -> "di [RPT0001]".
+PATTERN_CITATION_TIGHT_LEAD = re.compile(r"(?<=[^\s(\[*])(?=\[RPT[0-9]{4,}\](?:\s*,\s*RPT[0-9]{4,}\])*)")
+# A citation group for the answer-style metrics (mid-sentence and parentheses).
+PATTERN_CITATION_GROUP = re.compile(r"\[RPT[0-9]{4,}(?:\s*,\s*RPT[0-9]{4,})*\]")
 # A competition name this short is too generic to treat as a citation claim.
 CITATION_MENTION_MIN_CHARS = 8
 # Report IDs written by the model, with or without brackets, so they can be
@@ -458,9 +476,52 @@ SOURCE_BLOCK_LINE_TEMPLATE = (
 )
 SOURCE_BLOCK_SEPARATOR = "\n\n"
 
+# Real Groq limits for the account used by the supervisor (Groq console limits
+# page, read 2026-11-21). Cached prompt tokens do not count toward them
+# (https://console.groq.com/docs/rate-limits, checked 2026-11-21). TPD is not
+# exposed by any response header, so the limiter tracks it locally.
+GROQ_LIMITS = {
+    "model": LLM_MODEL_NAME,
+    "requests_per_minute": 30,
+    "requests_per_day": 1000,
+    "tokens_per_minute": 8000,
+    "tokens_per_day": 200000,
+    "source": "Groq console limits page",
+    "date": "2026-11-21",
+}
+# Rolling windows used by the token-aware limiter and the daily-reset fallback.
+TOKEN_LIMITER_MINUTE_WINDOW_SECONDS = 60.0
+TOKEN_LIMITER_DAY_WINDOW_SECONDS = 86400.0
+
+# Catalog answers are rendered by the backend (no answer-LLM call).
+CATALOG_MAX_ROWS = 30
+CATALOG_HEADER_TEMPLATE = "Tersedia {total} laporan evaluasi kompetisi."
+CATALOG_TYPE_LINE_TEMPLATE = "- Jenis kompetisi: {value}"
+CATALOG_YEAR_LINE_TEMPLATE = "- Tahun: {value}"
+CATALOG_ACHIEVEMENT_LINE_TEMPLATE = "- Pencapaian: {value}"
+CATALOG_ROW_TEMPLATE = (
+    "- {report_id} — {competition_name} ({competition_type}, "
+    "{competition_year}, {achievement_level})"
+)
+CATALOG_TRUNCATED_TEMPLATE = (
+    "Menampilkan {shown} dari {total} laporan; persempit dengan jenis kompetisi, "
+    "tahun, atau pencapaian."
+)
+CATALOG_VALUE_SEPARATOR = ", "
+CATALOG_COUNT_SEPARATOR = "; "
+CATALOG_EMPTY_VALUE = "tidak diketahui"
+
+# Readable labels for the section types used in the answer context.
+SECTION_TYPE_LABELS = {
+    "executive_summary": "Executive Summary",
+    "evaluasi_tim": "Evaluasi Tim",
+    "saran_pengembangan": "Saran Pengembangan",
+}
+
 # Smoke run pacing (fix pack F1g): Groq's gpt-oss-20b allows ~30 requests per
 # minute, and one question spends up to two requests.
 SMOKE_DEFAULT_DELAY_SECONDS = 20.0
+SMOKE_DEFAULT_TOKEN_BUDGET = 60000
 SMOKE_RETRIEVED_PREVIEW = 5
 
 # Backend answer sanitizer (fix pack F4d): HTML is stripped, Markdown kept.

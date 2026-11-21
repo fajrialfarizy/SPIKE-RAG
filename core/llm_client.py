@@ -42,6 +42,13 @@ from typing import Any, Callable, Dict, Mapping, Optional
 
 import config
 from core.deadline import Deadline, DeadlineExceeded
+from core.rate_limiter import (
+    DailyTokenBudgetExhausted,
+    MinuteTokenBudgetExhausted,
+    TokenAwareRateLimiter,
+    TokenBudgetExceeded,
+    get_token_limiter,
+)
 
 logger = logging.getLogger("core_llm")
 
@@ -109,6 +116,7 @@ class LLMResult:
     usage: TokenUsage = TokenUsage()
     latency_ms: float = 0.0
     attempts: int = 1
+    finish_reason: Optional[str] = None
 
     def to_metrics(self, name: str) -> Dict[str, Any]:
         return {
@@ -116,6 +124,7 @@ class LLMResult:
             "latency_ms": round(self.latency_ms, 1),
             "attempts": self.attempts,
             "usage": self.usage.to_dict(),
+            "finish_reason": self.finish_reason,
         }
 
 
@@ -234,6 +243,7 @@ class GroqLLMClient(LLMClient):
         sleep_fn: Callable[[float], None] = time.sleep,
         instruction_role: str = config.LLM_INSTRUCTION_ROLE,
         limiter: Optional[LLMConcurrencyLimiter] = None,
+        token_limiter: Optional[TokenAwareRateLimiter] = None,
         clock: Callable[[], float] = time.perf_counter,
     ):
         if instruction_role not in config.LLM_INSTRUCTION_ROLES:
@@ -247,6 +257,7 @@ class GroqLLMClient(LLMClient):
         self._sleep = sleep_fn
         self.instruction_role = instruction_role
         self._limiter = limiter
+        self._token_limiter = token_limiter
         self._clock = clock
 
     # -- configuration -----------------------------------------------------
@@ -281,6 +292,12 @@ class GroqLLMClient(LLMClient):
         if self._limiter is None:
             self._limiter = get_llm_limiter()
         return self._limiter
+
+    @property
+    def token_limiter(self) -> TokenAwareRateLimiter:
+        if self._token_limiter is None:
+            self._token_limiter = get_token_limiter()
+        return self._token_limiter
 
     # -- error classification ---------------------------------------------
     @staticmethod
@@ -364,8 +381,14 @@ class GroqLLMClient(LLMClient):
             total_tokens=_int_field(usage_obj, "total_tokens"),
         )
 
+        finish_reason = getattr(choices[0], "finish_reason", None)
+        if finish_reason is not None:
+            finish_reason = str(finish_reason)
+
         # message.reasoning is deliberately never read.
-        return LLMResult(content=content.strip(), usage=usage)
+        return LLMResult(
+            content=content.strip(), usage=usage, finish_reason=finish_reason
+        )
 
     # -- message assembly --------------------------------------------------
     def _build_messages(self, system_prompt: str, user_prompt: str) -> list:
@@ -414,6 +437,30 @@ class GroqLLMClient(LLMClient):
             kwargs["response_format"] = dict(config.LLM_JSON_RESPONSE_FORMAT)
         return kwargs
 
+    def _reserve_tokens(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+        deadline: Optional[Deadline],
+    ) -> list:
+        """Reserve this call's estimated tokens or turn the refusal into a 429."""
+        limiter = self.token_limiter
+        estimate = limiter.estimate_tokens(system_prompt, user_prompt, max_tokens)
+        try:
+            return limiter.reserve(estimate, deadline)
+        except DailyTokenBudgetExhausted as exc:
+            logger.warning("llm_token_budget_exhausted window=daily")
+            raise LLMRateLimitError(
+                "The daily token budget is exhausted.",
+                is_daily_limit=True,
+            ) from exc
+        except TokenBudgetExceeded as exc:
+            logger.warning("llm_token_budget_exhausted window=minute")
+            raise LLMRateLimitError(
+                "The per-minute token budget cannot be met inside the deadline."
+            ) from exc
+
     # -- public API --------------------------------------------------------
     def complete(
         self,
@@ -446,23 +493,34 @@ class GroqLLMClient(LLMClient):
                 json_mode,
                 timeout_seconds,
             )
+            reservation = self._reserve_tokens(
+                system_prompt, user_prompt, max_tokens, deadline
+            )
             try:
                 with self.limiter.slot(deadline):
                     response = self._client.chat.completions.create(**kwargs)
                 result = self._extract(response)
+                self.token_limiter.record(reservation, result.usage.total)
                 return LLMResult(
                     content=result.content,
                     usage=result.usage,
                     latency_ms=(self._clock() - started) * 1000.0,
                     attempts=attempt,
+                    finish_reason=result.finish_reason,
                 )
             except LLMError:
+                self.token_limiter.release(reservation)
                 raise
             except DeadlineExceeded:
+                self.token_limiter.release(reservation)
                 raise
             except Exception as exc:
+                # No usage was reported for this attempt; the reservation is
+                # released instead of counting tokens that were never billed.
+                self.token_limiter.release(reservation)
                 retryable, reason = self._classify_error(exc)
                 headers = self._response_headers(exc)
+                self.token_limiter.observe_headers(headers)
                 retry_after = _duration_seconds(headers.get("retry-after"))
                 is_rate_limited = self._status_code(exc) == 429 or reason == "http_429"
 

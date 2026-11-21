@@ -57,7 +57,7 @@ def test_document_delimiter_carries_report_metadata():
     assert opening == (
         '<dokumen id=LAP1 kompetisi="Asean Consulting Challenge" '
         'jenis="Business Plan" tahun="2024" pencapaian="Juara 1" '
-        'bagian="evaluasi_tim">'
+        'bagian="evaluasi_tim" bagian_label="Evaluasi Tim">'
     )
     assert bundle.text.endswith(config.CONTEXT_DOCUMENT_CLOSE_TAG)
     assert "isi dokumen RPT0003:evaluasi_tim:01" in bundle.text

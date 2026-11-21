@@ -125,6 +125,10 @@ def process_citations(
 
     text = config.PATTERN_LLM_REPORT_ID.sub(replace_report_id, text)
 
+    # Placement normalization (fix pack G4a): a citation glued to the previous
+    # word ("di[RPT0001]") gets the separating space the style rules expect.
+    text = config.PATTERN_CITATION_TIGHT_LEAD.sub(" ", text)
+
     # Removing a token can leave empty brackets, doubled spaces or a space in
     # front of punctuation behind.
     text = re.sub(r"[\[\(]\s*[\]\)]", "", text)
@@ -143,6 +147,30 @@ def process_citations(
             cited.append(report_id)
 
     return CitationResult(text=text, cited_report_ids=cited, incidents=incidents)
+
+
+def citation_style_metrics(text: str) -> Dict[str, int]:
+    """
+    Non-blocking style measurements for the debug object (fix pack G4b).
+
+    ``mid_sentence_citations`` counts citation groups that are followed by more
+    prose on the same line; ``unbalanced_parentheses`` counts the absolute
+    difference between opening and closing parentheses in the answer.
+    """
+    content = text or ""
+    mid_sentence = 0
+
+    for match in config.PATTERN_CITATION_GROUP.finditer(content):
+        line_end = content.find("\n", match.end())
+        rest = content[match.end() :] if line_end == -1 else content[match.end() : line_end]
+        rest = config.PATTERN_CITATION_GROUP.sub("", rest)
+        if rest.strip(" \t.,;:!?)-—*"):
+            mid_sentence += 1
+
+    return {
+        "mid_sentence_citations": mid_sentence,
+        "unbalanced_parentheses": abs(content.count("(") - content.count(")")),
+    }
 
 
 def build_source_block(
