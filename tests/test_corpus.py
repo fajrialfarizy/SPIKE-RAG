@@ -171,3 +171,63 @@ def test_generator_is_deterministic_at_content_level():
     assert first_docs == second_docs
     assert first_pages == second_pages
     assert hashlib.sha256(first_reports).hexdigest() == hashlib.sha256(second_reports).hexdigest()
+
+
+# -- fix pack L1: reflow, sentence-final chunks and the Q&A artifact --------
+def test_the_ampersand_artifact_is_gone_from_the_source_text():
+    parser = PDFParser()
+    joined = ""
+    for path in sorted(config.DUMMY_PDF_DIR.glob("DRV_RPT00*.pdf")):
+        success, sections, _ = parser.parse_sections(
+            parser.extract_and_clean_text(path)
+        )
+        if success:
+            joined += " ".join(sections.values())
+
+    assert "Q&A;" not in joined
+    assert "Q&A" in joined
+
+
+def test_no_dummy_section_keeps_a_blank_line_between_sentences():
+    parser = PDFParser()
+    for path in sorted(config.DUMMY_PDF_DIR.glob("DRV_RPT00*.pdf")):
+        success, sections, _ = parser.parse_sections(
+            parser.extract_and_clean_text(path)
+        )
+        if not success:
+            continue
+        for name, text in sections.items():
+            for line in text.splitlines():
+                assert "  " not in line, (path.name, name, line)
+
+
+def test_every_dummy_chunk_ends_at_a_sentence_or_list_item_end():
+    from tests.stubs import WordCountTokenizer
+
+    parser = PDFParser()
+    chunker = SectionAwareChunker(tokenizer=WordCountTokenizer())
+    offenders = []
+
+    for index in range(1, 11):
+        report_id = f"RPT{index:04d}"
+        path = pdf_path(f"DRV_{report_id}")
+        sections = parser.parse_sections(parser.extract_and_clean_text(path))[1]
+        for section_name in ("executive_summary", "evaluasi_tim", "saran_pengembangan"):
+            chunks = chunker.chunk_section(
+                report_id=report_id,
+                competition_name="Lomba Contoh",
+                competition_year=2024,
+                competition_type="Essay",
+                achievement_level="Juara 1",
+                source_file_id=path.name,
+                judul_ide=sections["judul_ide"],
+                section_type=SectionType(section_name),
+                section_content=sections[section_name],
+            )
+            offenders.extend(chunker.non_terminal_chunk_ids)
+            for chunk in chunks:
+                body = chunk.document_text.split("\n\n", 1)[1]
+                # Blank lines only separate real paragraphs, never wrapped lines.
+                assert "\n\n\n" not in body
+
+    assert offenders == []

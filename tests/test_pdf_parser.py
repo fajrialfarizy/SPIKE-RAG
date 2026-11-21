@@ -195,3 +195,81 @@ def test_scanned_pdf_has_no_extractable_text(tmp_path):
     assert len(text.strip()) < config.PDF_MIN_TEXT_CHARS
     assert success is False
     assert "scan" in reason.lower()
+
+
+# -- fix pack L1b: wrapped lines are reflowed into real paragraphs -----------
+def test_wrapped_lines_become_one_paragraph():
+    text = (
+        "Persiapan proposal memakan waktu 4 minggu dengan penekanan kuat\n"
+        "pada validasi masalah melalui wawancara mendalam."
+    )
+
+    assert PDFParser.reflow_section(text) == (
+        "Persiapan proposal memakan waktu 4 minggu dengan penekanan kuat pada "
+        "validasi masalah melalui wawancara mendalam."
+    )
+
+
+def test_a_blank_line_keeps_a_paragraph_break():
+    text = "Paragraf pertama utuh.\n\nParagraf kedua juga utuh."
+
+    assert PDFParser.reflow_section(text) == (
+        "Paragraf pertama utuh.\n\nParagraf kedua juga utuh."
+    )
+
+
+def test_list_items_stay_separate_paragraphs():
+    text = (
+        "Catatan pembuka untuk tim.\n"
+        "1. Susun analisis sensitivitas.\n"
+        "2. Perluas kemitraan klinis."
+    )
+
+    assert PDFParser.reflow_section(text) == (
+        "Catatan pembuka untuk tim.\n\n"
+        "1. Susun analisis sensitivitas.\n\n"
+        "2. Perluas kemitraan klinis."
+    )
+
+
+def test_a_hyphenated_wrap_is_joined_without_a_space():
+    text = "Tempo pemaparan terburu-\nburu dan melebihi durasi."
+
+    assert PDFParser.reflow_section(text) == (
+        "Tempo pemaparan terburu-buru dan melebihi durasi."
+    )
+
+
+def test_a_hyphen_that_is_not_a_wrap_is_never_deleted():
+    text = "Catatan penutup -\nBukan bagian administratif."
+
+    assert PDFParser.reflow_section(text) == (
+        "Catatan penutup - Bukan bagian administratif."
+    )
+
+
+def test_reflow_never_leaves_a_double_space():
+    text = "  Tim   A   juara.  \n  Tim  B  finalis.  "
+
+    result = PDFParser.reflow_section(text)
+
+    assert "  " not in result
+    assert result == "Tim A juara. Tim B finalis."
+
+
+def test_reflow_does_not_join_across_a_heading():
+    text = "Kalimat terakhir bagian sebelumnya.\nEvaluasi Tim\nKalimat pertama bagian berikutnya."
+
+    assert PDFParser.reflow_section(text) == (
+        "Kalimat terakhir bagian sebelumnya.\n\nEvaluasi Tim\n\n"
+        "Kalimat pertama bagian berikutnya."
+    )
+
+
+def test_a_sentence_starting_with_a_heading_word_is_not_a_heading():
+    line = "Evaluasi Tim menunjukkan kedalaman analisis yang baik."
+
+    assert PDFParser.is_heading_line(line) is False
+    assert PDFParser.reflow_section(f"{line}\nBaris lanjutan.") == (
+        "Evaluasi Tim menunjukkan kedalaman analisis yang baik. Baris lanjutan."
+    )

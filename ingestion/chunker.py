@@ -7,9 +7,10 @@ Guarantees:
 - Tokens are counted with the e5 tokenizer (or an explicitly injected counter).
 - The 'passage: ' prefix and the context header count toward the token budget.
 - Hard limit of 512 tokens, asserted in addition to the 350-450 target window.
-- Paragraph/sentence boundaries are respected; a single overlong sentence is
-  split by word windows (and, pathologically, by characters), so the assertion
-  is unreachable in practice instead of aborting a batch.
+- Chunks end at a sentence end or at the end of a list item; only a single
+  sentence that alone exceeds the budget is split by word windows (counted in
+  ``oversized_sentence_splits``), so the assertion is unreachable in practice
+  instead of aborting a batch.
 - chunk_id is deterministic: ``{report_id}:{section_type}:{NN}``.
 - Exactly 8 metadata fields.
 """
@@ -50,6 +51,10 @@ class SectionAwareChunker:
         """
         self.tokenizer = tokenizer
         self._counter = None
+        # Chunk-shape counters for the last chunk_section() call (fix pack L1c).
+        self.oversized_sentence_splits = 0
+        self.non_terminal_chunk_ids: List[str] = []
+        self.window_chunk_ids: List[str] = []
 
     def _resolve_counter(self):
         if self._counter is not None:
@@ -126,8 +131,9 @@ class SectionAwareChunker:
 
     @staticmethod
     def split_into_paragraphs(text: str) -> List[str]:
-        raw = text.split("\n")
-        return [part.strip() for part in raw if part.strip()]
+        """Paragraphs are separated by blank lines, never by a wrapped line."""
+        raw = config.PATTERN_CHUNK_PARAGRAPH_BREAK.split(text or "")
+        return [" ".join(part.split()) for part in raw if part.strip()]
 
     def _split_by_words(self, text: str, max_tokens: int) -> List[str]:
         """Greedily pack words into pieces that fit the token budget."""
@@ -165,31 +171,46 @@ class SectionAwareChunker:
 
     def _section_atoms(
         self, section_content: str, budget: int
-    ) -> List[Tuple[str, str]]:
+    ) -> List[Tuple[str, str, str]]:
         """
-        Break a section into packable atoms with their joining separator.
+        Break a section into packable atoms: (text, joiner, kind).
 
-        Paragraphs are preferred; overlong paragraphs go to sentences; overlong
-        sentences go to word windows (separator ' ').
+        Every atom ends at a sentence end, except a whole list item (which may end
+        without punctuation) and a word window of an overlong sentence. Paragraph
+        gaps survive as the '\n\n' joiner of the paragraph's first atom.
         """
-        atoms: List[Tuple[str, str]] = []
+        atoms: List[Tuple[str, str, str]] = []
 
-        for paragraph in self.split_into_paragraphs(section_content):
+        for index, paragraph in enumerate(
+            self.split_into_paragraphs(section_content)
+        ):
+            first_joiner = config.CHUNK_PARAGRAPH_SEPARATOR if index else ""
+            is_list_item = config.PATTERN_PDF_LIST_ITEM.match(paragraph) is not None
             if self.count_tokens(paragraph) <= budget:
-                atoms.append((paragraph, "\n\n"))
+                atoms.append(
+                    (paragraph, first_joiner, "list" if is_list_item else "text")
+                )
                 continue
 
-            for sentence in self.split_into_sentences(paragraph):
+            for position, sentence in enumerate(self.split_into_sentences(paragraph)):
+                joiner = first_joiner if position == 0 else " "
                 if self.count_tokens(sentence) <= budget:
-                    atoms.append((sentence, " "))
+                    atoms.append((sentence, joiner, "text"))
                     continue
 
-                for window in self._split_by_words(sentence, budget):
+                self.oversized_sentence_splits += 1
+                for window_index, window in enumerate(
+                    self._split_by_words(sentence, budget)
+                ):
+                    window_joiner = joiner if window_index == 0 else " "
                     if self.count_tokens(window) <= budget:
-                        atoms.append((window, " "))
+                        atoms.append((window, window_joiner, "window"))
                     else:
-                        for piece in self._split_by_chars(window, budget):
-                            atoms.append((piece, " "))
+                        for piece_index, piece in enumerate(
+                            self._split_by_chars(window, budget)
+                        ):
+                            piece_joiner = window_joiner if piece_index == 0 else ""
+                            atoms.append((piece, piece_joiner, "window"))
 
         return atoms
 
@@ -212,6 +233,9 @@ class SectionAwareChunker:
         ``Kompetisi: {name} ({type}, {year}) | Judul ide: {judul} | Bagian: {label}``
         """
         label = self.SECTION_LABELS[section_type]
+        self.oversized_sentence_splits = 0
+        self.non_terminal_chunk_ids = []
+        self.window_chunk_ids = []
         header = self.build_context_header(
             competition_name=competition_name,
             competition_type=competition_type,
@@ -231,7 +255,9 @@ class SectionAwareChunker:
                 f"{config.CHUNK_TARGET_MAX_TOKENS}-token target."
             )
 
-        def build_chunk(content_text: str, chunk_number: int) -> DocumentChunk:
+        def build_chunk(
+            content_text: str, chunk_number: int, last_kind: str
+        ) -> DocumentChunk:
             document_text = f"{header}\n\n{content_text}"
             embed_text = f"{passage_prefix}{document_text}"
             token_count = self.count_tokens(embed_text)
@@ -257,6 +283,16 @@ class SectionAwareChunker:
                 f"Metadata must have exactly 8 fields, got {len(metadata)}"
             )
 
+            # Fix pack L1c: honest bookkeeping instead of a silent mid-sentence
+            # cut. A word window is the only allowed exception; anything else is
+            # recorded so a corpus scan can fail on it.
+            if last_kind == "window":
+                self.window_chunk_ids.append(chunk_id)
+            elif last_kind != "list" and not content_text.rstrip().endswith(
+                config.CHUNK_TERMINAL_PUNCTUATION
+            ):
+                self.non_terminal_chunk_ids.append(chunk_id)
+
             return DocumentChunk(
                 chunk_id=chunk_id,
                 report_id=report_id,
@@ -270,18 +306,20 @@ class SectionAwareChunker:
         atoms = self._section_atoms(section_content, budget)
         chunks: List[DocumentChunk] = []
         current_text = ""
+        current_kind = "text"
         chunk_number = 1
 
-        for atom, separator in atoms:
+        for atom, separator, kind in atoms:
             candidate = f"{current_text}{separator}{atom}" if current_text else atom
             if current_text and self.count_tokens(candidate) > budget:
-                chunks.append(build_chunk(current_text, chunk_number))
+                chunks.append(build_chunk(current_text, chunk_number, current_kind))
                 chunk_number += 1
                 current_text = atom
             else:
                 current_text = candidate
+            current_kind = kind
 
         if current_text:
-            chunks.append(build_chunk(current_text, chunk_number))
+            chunks.append(build_chunk(current_text, chunk_number, current_kind))
 
         return chunks

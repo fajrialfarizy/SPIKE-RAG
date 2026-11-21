@@ -235,3 +235,53 @@ def test_header_still_raises_when_content_budget_is_exhausted(monkeypatch):
             section_content="Isi.",
             **kwargs,
         )
+
+
+# -- fix pack L1c: chunks end at a sentence end -----------------------------
+def test_a_chunk_never_ends_mid_sentence():
+    chunker = make_chunker()
+    sentences = [
+        f"Kalimat ke-{index} membahas kendala tim secara rinci." for index in range(120)
+    ]
+
+    chunks = chunker.chunk_section(
+        section_type=SectionType.EVALUASI_TIM,
+        section_content=" ".join(sentences),
+        **HEADER_ARGS,
+    )
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        body = chunk.document_text.split("\n\n", 1)[1].rstrip()
+        assert body.endswith(config.CHUNK_TERMINAL_PUNCTUATION), chunk.chunk_id
+    assert chunker.non_terminal_chunk_ids == []
+    assert chunker.oversized_sentence_splits == 0
+
+
+def test_an_overlong_sentence_split_is_counted_as_a_window():
+    chunker = make_chunker()
+
+    chunks = chunker.chunk_section(
+        section_type=SectionType.SARAN_PENGEMBANGAN,
+        section_content=words(900) + ".",
+        **HEADER_ARGS,
+    )
+
+    assert len(chunks) >= 3
+    assert chunker.oversized_sentence_splits == 1
+    assert len(chunker.window_chunk_ids) == len(chunks)
+    # Only the last window still carries the sentence's final period.
+    assert chunks[-1].document_text.rstrip().endswith(".")
+
+
+def test_wrapped_lines_inside_one_paragraph_do_not_become_paragraphs():
+    chunker = make_chunker()
+
+    chunks = chunker.chunk_section(
+        section_type=SectionType.EVALUASI_TIM,
+        section_content="Tim bekerja sama\ndengan baik selama final.",
+        **HEADER_ARGS,
+    )
+
+    body = chunks[0].document_text.split("\n\n", 1)[1]
+    assert body == "Tim bekerja sama dengan baik selama final."

@@ -38,6 +38,11 @@ def create_blank_or_scanned_image(image_path: Path):
     img.save(image_path)
 
 
+def _escape_markup(text: str) -> str:
+    """Escape markup characters so the source text renders literally."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def generate_pdf(
     file_path: Path,
     sections: dict,
@@ -101,8 +106,11 @@ def generate_pdf(
     for key, label in heading_labels.items():
         if key in sections and sections[key] is not None:
             story.append(Paragraph(f"<b>{label}</b>", heading_style))
-            # Clean paragraphs
-            content_text = sections[key].strip().replace("\n", "<br/>")
+            # Clean paragraphs. reportlab parses its arguments as markup, so a
+            # bare "&" would be escaped into "Q&A;" in the PDF (fix pack L1e).
+            content_text = _escape_markup(sections[key].strip()).replace(
+                "\n", "<br/>"
+            )
             story.append(Paragraph(content_text, body_style))
             story.append(Spacer(1, 6))
 

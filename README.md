@@ -104,6 +104,16 @@ python scripts/smoke_groq.py --chroma-dir chroma_db --delay 20     # smoke Groq 
 # Opsi: --only id_route,catalog  --show-raw  --show-context  --token-budget 30000  --answer-effort low
 ```
 
+## Batas chunk dan reflow PDF
+
+PyMuPDF mengembalikan satu baris per baris visual tanpa penanda paragraf, jadi ingest
+mereflow dulu sebelum chunking: baris yang bersambung digabung dengan satu spasi,
+paragraf hanya dipisah oleh baris kosong, penanda butir, atau judul bagian, dan kata
+berhubung ("terburu-" + "buru") digabung tanpa spasi. Chunk berakhir di akhir kalimat
+atau akhir butir daftar; hanya satu kalimat yang sendirian melebihi batas token yang
+dipecah per jendela kata (dihitung di `oversized_sentence_splits`). Semua aturan dan
+anggotanya ada di `config.py` bagian PDF reflow dan chunking.
+
 ## Catatan kuota
 
 Penghitung kuota per sesi dan limiter token Groq hidup **di memori proses**:
