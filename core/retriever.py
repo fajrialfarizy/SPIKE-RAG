@@ -127,10 +127,16 @@ class Retriever:
         k: int,
         max_per_report: int,
     ) -> List[RetrievedChunk]:
-        """Greedy pick by score, capped per report, deterministic on ties."""
+        """
+        Greedy pick by score, capped per report, deterministic on ties.
+
+        The sort key is (score, report_id, chunk_id) so an identical query always
+        produces the same ordered set even when Chroma returns equal-distance hits
+        in a different order (fix pack K1c).
+        """
         ordered = sorted(
             candidates,
-            key=lambda item: (-(item.score or 0.0), item.chunk_id),
+            key=lambda item: (-(item.score or 0.0), item.report_id, item.chunk_id),
         )
 
         selected: List[RetrievedChunk] = []
@@ -230,7 +236,7 @@ class Retriever:
 
         ordered = sorted(
             best_per_report.values(),
-            key=lambda chunk: (-(chunk.score or 0.0), chunk.chunk_id),
+            key=lambda chunk: (-(chunk.score or 0.0), chunk.report_id, chunk.chunk_id),
         )
         return ordered[: int(max_reports)]
 
@@ -254,6 +260,9 @@ class Retriever:
             n_results=candidate_count,
         )
 
+        # Normalize the provider's order before selection so only the explicit
+        # tie-break decides (fix pack K1c).
+        matches = sorted(matches, key=lambda match: match.chunk_id)
         candidates = [
             RetrievedChunk(
                 chunk_id=match.chunk_id,
