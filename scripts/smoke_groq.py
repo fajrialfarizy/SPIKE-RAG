@@ -182,6 +182,8 @@ def print_calls(calls: Sequence[dict]) -> None:
     for call in calls:
         print(
             f"  - {call.get('name')}: latency_ms={call.get('latency_ms')} "
+            f"queue_wait_ms={call.get('queue_wait_ms', 'n/a')} "
+            f"model_latency_ms={call.get('model_latency_ms', 'n/a')} "
             f"attempts={call.get('attempts')} tokens={_json(call.get('usage') or {})}"
         )
 
@@ -258,6 +260,8 @@ def main(argv: Optional[list] = None) -> int:
     daily_limit = int(config.GROQ_LIMITS["tokens_per_day"])
     top1_scores: List[float] = []
     cumulative_tokens = 0
+    cached_tokens = 0
+    cached_reported = False
     truncated_answers = 0
     style_totals = {"mid_sentence_citations": 0, "unbalanced_parentheses": 0}
     print(
@@ -291,6 +295,8 @@ def main(argv: Optional[list] = None) -> int:
             f"style={_json(result.debug.style)} "
             f"incidents={_json(result.debug.incidents)}"
         )
+        if result.debug.coverage:
+            print(f"coverage: {result.debug.coverage}")
         if args.show_raw:
             print_raw_answers(result.debug.raw_answers)
         print(
@@ -308,6 +314,11 @@ def main(argv: Optional[list] = None) -> int:
 
         question_tokens = int(result.debug.token_usage.get("total_tokens") or 0)
         cumulative_tokens += question_tokens
+        # Fix pack H5b: cached prompt tokens are reported, never discounted from
+        # the limiter estimate until a real run proves the numbers.
+        if "cached_tokens" in result.debug.token_usage:
+            cached_reported = True
+            cached_tokens += int(result.debug.token_usage["cached_tokens"] or 0)
         truncated_answers += int(
             (result.debug.incidents or {}).get("answer_truncated") or 0
         )
@@ -362,6 +373,11 @@ def main(argv: Optional[list] = None) -> int:
     )
     print(f"truncated_answers={truncated_answers}")
     print(f"style_totals={_json(style_totals)}")
+    print(
+        f"cached_tokens={cached_tokens}"
+        if cached_reported
+        else "cached_tokens=not reported"
+    )
     return 0
 
 
