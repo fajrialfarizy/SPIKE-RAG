@@ -85,6 +85,7 @@ pytest -m slow         # test yang memuat model e5 (butuh model terunduh)
 ```bash
 python -m core.cli "Apa kendala tim pada business plan?" --debug   # pipeline via CLI
 python scripts/smoke_groq.py --chroma-dir chroma_db --delay 20     # smoke Groq (butuh GROQ_API_KEY)
+# Opsi: --only id_route,catalog  --show-raw  --token-budget 30000  --answer-effort low
 ```
 
 ## Catatan SQLite

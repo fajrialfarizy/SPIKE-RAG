@@ -12,6 +12,11 @@ Angka cold start yang diukur di mesin pengembangan (Windows, model sudah terundu
 | RSS setelah siap | ± 900 MB |
 | Embedding satu pertanyaan (setelah warm-up) | ± 50 ms |
 
+> **Unduhan model (opsional):** `intfloat/multilingual-e5-small` diunduh sekali saat runtime
+> pertama. Set `HF_TOKEN` di Secrets/environment agar unduhan memakai kuota akun Hugging Face
+> (menghindari peringatan unauthenticated dan laju unduhan yang dibatasi; warm-up 88 detik pada
+> run tanpa cache). Token ini hanya untuk unduhan model, bukan untuk Groq.
+
 > **Penting:** 900 MB lebih besar dari batas bawah Streamlit Cloud (690 MB). Pilih mesin
 > dengan RAM ≥ 1 GB. Jika hanya tersedia 690 MB, aplikasi akan kehabisan memori; alternatif
 > yang perlu persetujuan Anda adalah jalur ONNX untuk model yang sama (belum diimplementasikan).
@@ -112,5 +117,6 @@ di atas (timpa keduanya bersamaan; manifest lama dengan zip baru akan ditolak ka
 | --- | --- | --- |
 | Layar "konfigurasi belum lengkap" | Secrets kurang satu seksi | Periksa `[auth]`, `[groq]`, `[kb]` |
 | Layar galat teknis saat login berhasil | Manifest/zip tidak valid atau SQLite < 3.35 | Cek log: `kb_*`/`SQLiteVersionError` |
-| Jawaban "terlalu banyak permintaan" | Kuota Groq habis / rate limit | Tunggu beberapa menit, cek kuota Groq |
+| Jawaban "terlalu banyak permintaan" | Batas token per menit Groq | Tunggu beberapa menit, cek kuota Groq |
+| Jawaban "kuota harian layanan sedang habis" | Batas token harian Groq (200.000/hari) | Tunggu sampai jendela harian direset besok; jangan menaikkan limit di kode |
 | Semua pengguna terkunci | 5 login salah | Tunggu 5 menit |
