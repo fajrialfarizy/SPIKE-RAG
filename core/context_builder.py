@@ -36,6 +36,8 @@ class ContextBundle:
     alias_map: Dict[str, str] = field(default_factory=dict)
     report_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     chunk_ids: List[str] = field(default_factory=list)
+    # Un-normalized rendering, kept only to report the token saving (fix pack L1d).
+    raw_text: str = ""
 
     @property
     def report_ids(self) -> List[str]:
@@ -70,6 +72,34 @@ def _neutralize_delimiters(text: str) -> str:
     )
 
 
+def _normalize_document_text(text: str) -> str:
+    """
+    Collapse blank lines that only wrapped a sentence (fix pack L1d).
+
+    Every line inside a paragraph is joined with one space, runs of blank lines
+    become one paragraph break, and a paragraph break whose second half starts
+    lowercase while the first half has no terminal punctuation is joined back:
+    that is a wrapped line, never a paragraph.
+    """
+    normalized = config.PATTERN_CONTEXT_BLANK_RUN.sub(
+        config.CONTEXT_PARAGRAPH_SEPARATOR, (text or "").replace("\r\n", "\n")
+    )
+    paragraphs: List[str] = []
+    for part in normalized.split(config.CONTEXT_PARAGRAPH_SEPARATOR):
+        body = " ".join(part.split())
+        if not body:
+            continue
+        if (
+            paragraphs
+            and not paragraphs[-1].endswith(config.CHUNK_TERMINAL_PUNCTUATION)
+            and body[:1].islower()
+        ):
+            paragraphs[-1] = f"{paragraphs[-1]} {body}"
+        else:
+            paragraphs.append(body)
+    return config.CONTEXT_PARAGRAPH_SEPARATOR.join(paragraphs)
+
+
 class ContextBuilder:
     """Builds the delimited context for chunks or for the catalog list."""
 
@@ -79,6 +109,7 @@ class ContextBuilder:
         report_metadata: Dict[str, Dict[str, Any]] = {}
         chunk_ids: List[str] = []
         blocks: List[str] = []
+        raw_blocks: List[str] = []
         current_group: Any = None
 
         for chunk in chunks:
@@ -126,9 +157,13 @@ class ContextBuilder:
                     else ""
                 ),
             )
+            raw_document = _neutralize_delimiters(chunk.document)
             blocks.append(
-                f"{opening}\n{_neutralize_delimiters(chunk.document)}\n"
+                f"{opening}\n{_normalize_document_text(raw_document)}\n"
                 f"{config.CONTEXT_DOCUMENT_CLOSE_TAG}"
+            )
+            raw_blocks.append(
+                f"{opening}\n{raw_document}\n{config.CONTEXT_DOCUMENT_CLOSE_TAG}"
             )
             chunk_ids.append(chunk.chunk_id)
 
@@ -140,6 +175,7 @@ class ContextBuilder:
             alias_map=alias_map,
             report_metadata=report_metadata,
             chunk_ids=chunk_ids,
+            raw_text=config.CONTEXT_DOCUMENT_SEPARATOR.join(raw_blocks),
         )
 
     def build_chunks_within_budget(

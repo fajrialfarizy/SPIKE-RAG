@@ -64,13 +64,13 @@ def structured_payload():
         {
             "groups": [
                 {
-                    "label": "juara",
+                    "label": "meraih penghargaan",
                     "points": [
                         {"text": "Tim juara fokus pada validasi pasar.", "cite": ["LAP1"]}
                     ],
                 },
                 {
-                    "label": "belum juara",
+                    "label": "belum juara (finalis)",
                     "points": [
                         {"text": "Tim finalis kekurangan waktu uji coba.", "cite": ["LAP2"]}
                     ],
@@ -118,8 +118,8 @@ def test_each_retrieved_chunk_carries_its_group_label():
         "perbandingan", QueryMode.CROSS_REPORT, {}, "achievement_group"
     )
     assert {item.report_id: item.group_label for item in chunks} == {
-        "RPT0001": "juara",
-        "RPT0009": "belum juara",
+        "RPT0001": "meraih penghargaan",
+        "RPT0009": "belum juara (finalis)",
     }
 
 
@@ -132,12 +132,12 @@ def test_the_answer_context_wraps_each_group_in_a_named_block():
 
     assert result.status is AnswerStatus.ANSWERED
     prompt = llm.calls[1]["user_prompt"]
-    assert '<kelompok nama="juara">' in prompt
-    assert '<kelompok nama="belum juara">' in prompt
-    assert 'kelompok="juara"' in prompt
-    assert 'kelompok="belum juara"' in prompt
-    assert prompt.index('<kelompok nama="juara">') < prompt.index(
-        '<kelompok nama="belum juara">'
+    assert '<kelompok nama="meraih penghargaan">' in prompt
+    assert '<kelompok nama="belum juara (finalis)">' in prompt
+    assert 'kelompok="meraih penghargaan"' in prompt
+    assert 'kelompok="belum juara (finalis)"' in prompt
+    assert prompt.index('<kelompok nama="meraih penghargaan">') < prompt.index(
+        '<kelompok nama="belum juara (finalis)">'
     )
 
 
@@ -171,12 +171,12 @@ def test_every_award_level_is_inside_the_award_group_block():
 @pytest.mark.parametrize(
     "level,label",
     [
-        ("Juara 1", "juara"),
-        ("Juara 2", "juara"),
-        ("Juara 3", "juara"),
-        ("Juara Harapan", "juara"),
-        ("Most Aspiring dan penghargaan serupa", "juara"),
-        ("Finalis", "belum juara"),
+        ("Juara 1", "meraih penghargaan"),
+        ("Juara 2", "meraih penghargaan"),
+        ("Juara 3", "meraih penghargaan"),
+        ("Juara Harapan", "meraih penghargaan"),
+        ("Most Aspiring dan penghargaan serupa", "meraih penghargaan"),
+        ("Finalis", "belum juara (finalis)"),
     ],
 )
 def test_every_achievement_level_is_retrieved_inside_its_group(level, label):
@@ -198,17 +198,17 @@ def test_group_aware_trimming_keeps_at_least_one_chunk_per_group():
     builder = ContextBuilder()
     counter = WordCountTokenizer()
     chunks = [
-        chunk("RPT0001", 1, 0.95, "juara"),
-        chunk("RPT0001", 2, 0.90, "juara"),
-        chunk("RPT0001", 3, 0.85, "juara"),
-        chunk("RPT0009", 1, 0.50, "belum juara"),
+        chunk("RPT0001", 1, 0.95, "meraih penghargaan"),
+        chunk("RPT0001", 2, 0.90, "meraih penghargaan"),
+        chunk("RPT0001", 3, 0.85, "meraih penghargaan"),
+        chunk("RPT0009", 1, 0.50, "belum juara (finalis)"),
     ]
     limit = counter.count_tokens(builder.build_chunks([chunks[0], chunks[3]]).text)
 
     bundle, dropped = builder.build_chunks_within_budget(chunks, counter, limit)
 
     assert dropped
-    assert '<kelompok nama="juara">' in bundle.text
-    assert '<kelompok nama="belum juara">' in bundle.text
+    assert '<kelompok nama="meraih penghargaan">' in bundle.text
+    assert '<kelompok nama="belum juara (finalis)">' in bundle.text
     kept = [item for item in chunks if item.chunk_id not in dropped]
-    assert {item.group_label for item in kept} == {"juara", "belum juara"}
+    assert {item.group_label for item in kept} == {"meraih penghargaan", "belum juara (finalis)"}

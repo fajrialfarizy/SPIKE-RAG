@@ -35,7 +35,7 @@ def test_mid_sentence_mentions_are_moved_and_the_parentheses_removed():
     )
 
     assert result.text == (
-        "Kendala utama adalah logistik dan koordinasi [RPT0001], [RPT0002]."
+        "Kendala utama adalah logistik dan koordinasi [RPT0001] [RPT0002]."
     )
     assert "(" not in result.text
     assert result.cited_report_ids == ["RPT0001", "RPT0002"]

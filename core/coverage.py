@@ -47,8 +47,9 @@ def comparison_totals(
     totals = []
     for group in config.COMPARISON_GROUPS.get(compare_by, ()):
         merged = merge_filter_dicts(filters, group.get("filter"))
-        # Fix pack J3b: the sentence names the group in plain language.
-        coverage_label = group.get("coverage_label") or group["label"]
+        # Fix pack L2: the coverage sentence uses the model-facing group name, so
+        # the answer, the headings and the sentence never disagree.
+        coverage_label = group["label"]
         if any(not values for values in merged.values()):
             totals.append(
                 {

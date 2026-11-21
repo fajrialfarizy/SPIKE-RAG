@@ -51,7 +51,7 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _BULLET_PREFIX = re.compile(r"^(\s*(?:[-*+]|\d+[.)])\s+)")
 _TRAILING_PUNCTUATION = ".,;:!?"
 _TRAILING_ALIAS_GROUP = re.compile(
-    r"[\[\(]\s*LAP[0-9]{1,3}(?:\s*[,;/]\s*LAP[0-9]{1,3})*\s*[\]\)]$"
+    r"(?:[\[\(]\s*LAP[0-9]{1,3}(?:\s*[,;/]\s*LAP[0-9]{1,3})*\s*[\]\)]\s*)+$"
 )
 _NOISE = " \t\r\n.,;:!?*_-\u2013\u2014()[]{}\"'"
 
@@ -126,7 +126,10 @@ def _relocate_segment(segment: str) -> str:
                 aliases.append(alias)
         stripped = stripped[: existing.start()].rstrip()
 
-    citation = f"[{', '.join(aliases)}]"
+    # One citation format everywhere (fix pack L6): separate brackets, one space.
+    citation = config.CITATION_GROUP_JOINER.join(
+        config.CITATION_GROUP_TEMPLATE.format(report_id=alias) for alias in aliases
+    )
     if not stripped:
         return citation + trailing
     return f"{stripped} {citation}{trailing}"
@@ -211,7 +214,7 @@ def process_citations(
             )
             if item
         ]
-        return ", ".join(resolved)
+        return config.CITATION_GROUP_JOINER.join(resolved)
 
     text = config.PATTERN_ALIAS_LIST.sub(replace_list, text)
 

@@ -59,6 +59,10 @@ class AnalyzerResult:
     used_fallback: bool = False
     dropped_invalid_values: int = 0
     latency_ms: float = 0.0
+    # Fix pack L5a: the analyzer call reports the same split as every other call,
+    # instead of leaving the smoke output at "n/a".
+    queue_wait_ms: float = 0.0
+    model_latency_ms: float = 0.0
     usage: Dict[str, int] = field(default_factory=dict)
     error_type: Optional[str] = None
     raw_output: str = ""
@@ -278,6 +282,8 @@ def validate_analysis(
     latency_ms: float = 0.0,
     usage: Optional[Dict[str, int]] = None,
     raw_output: str = "",
+    queue_wait_ms: float = 0.0,
+    model_latency_ms: float = 0.0,
 ) -> AnalyzerResult:
     """Validate every analyzer field against the enum sets and config limits."""
     dropped: List[str] = []
@@ -343,6 +349,8 @@ def validate_analysis(
         used_fallback=False,
         dropped_invalid_values=len(dropped),
         latency_ms=round(latency_ms, 1),
+        queue_wait_ms=round(queue_wait_ms, 1),
+        model_latency_ms=round(model_latency_ms, 1),
         usage=dict(usage or {}),
         raw_output=raw_output,
         payload=dict(payload),
@@ -354,7 +362,13 @@ def validate_analysis(
 
 
 def fallback_result(
-    question: str, *, reason: str, latency_ms: float = 0.0, raw_output: str = ""
+    question: str,
+    *,
+    reason: str,
+    latency_ms: float = 0.0,
+    raw_output: str = "",
+    queue_wait_ms: float = 0.0,
+    model_latency_ms: float = 0.0,
 ) -> AnalyzerResult:
     """Fallback mandated by Brief 5.5: in scope, specific, no filters."""
     logger.warning("analyzer_fallback reason=%s", reason)
@@ -367,6 +381,8 @@ def fallback_result(
         filters={},
         used_fallback=True,
         latency_ms=round(latency_ms, 1),
+        queue_wait_ms=round(queue_wait_ms, 1),
+        model_latency_ms=round(model_latency_ms, 1),
         error_type=reason,
         raw_output=raw_output,
         dropped_reasons=[f"fallback:{reason}"],
@@ -414,6 +430,8 @@ class Analyzer:
                 reason="invalid_json",
                 latency_ms=latency_ms,
                 raw_output=completion.content,
+                queue_wait_ms=completion.queue_wait_ms,
+                model_latency_ms=completion.model_latency_ms,
             )
 
         return validate_analysis(
@@ -422,4 +440,6 @@ class Analyzer:
             latency_ms=latency_ms,
             usage=completion.usage.to_dict(),
             raw_output=completion.content,
+            queue_wait_ms=completion.queue_wait_ms,
+            model_latency_ms=completion.model_latency_ms,
         )

@@ -103,6 +103,8 @@ class DebugInfo:
     context_text: str = ""
     # Non-blocking negation metric (fix pack K2). Samples stay developer-only.
     negation: Dict[str, Any] = field(default_factory=dict)
+    # Tokens saved by collapsing wrapped lines in the rendered context (L1d).
+    context_tokens_saved: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -130,6 +132,7 @@ class DebugInfo:
             "coverage": self.coverage,
             "context_text": self.context_text,
             "negation": self.negation,
+            "context_tokens_saved": self.context_tokens_saved,
         }
 
 
@@ -291,6 +294,7 @@ class RagPipeline:
             "coverage": "",
             "context_text": "",
             "negation": {},
+            "context_tokens_saved": 0,
         }
 
         def result(
@@ -325,6 +329,7 @@ class RagPipeline:
                 coverage=state["coverage"],
                 context_text=state["context_text"],
                 negation=dict(state["negation"]),
+                context_tokens_saved=int(state["context_tokens_saved"]),
             )
             logger.info(
                 "chat_request status=%s mode=%s route=%s chunks=%d latency_ms=%.1f "
@@ -409,12 +414,16 @@ class RagPipeline:
                 "used_fallback": analysis.used_fallback,
                 "error_type": analysis.error_type,
                 "latency_ms": analysis.latency_ms,
+                "queue_wait_ms": analysis.queue_wait_ms,
+                "model_latency_ms": analysis.model_latency_ms,
                 "usage": analysis.usage,
             }
             state["calls"].append(
                 {
                     "name": "analyzer",
                     "latency_ms": analysis.latency_ms,
+                    "queue_wait_ms": analysis.queue_wait_ms,
+                    "model_latency_ms": analysis.model_latency_ms,
                     "usage": analysis.usage,
                     "attempts": 1,
                     "used_fallback": analysis.used_fallback,
@@ -674,7 +683,7 @@ class RagPipeline:
         if validation.is_empty:
             return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
 
-        answer_text = compare_answer.render_answer(validation)
+        answer_text = compare_answer.render_answer(validation, compare_by)
         state["style"] = citation_style_metrics(answer_text)
         state["negation"] = {
             **negation_sentences(answer_text),
@@ -734,6 +743,11 @@ class RagPipeline:
         state["alias_map"] = bundle.alias_map
         state["retrieved"] = self._retrieved_debug(chunks)
         state["context_text"] = bundle.text
+        state["context_tokens_saved"] = max(
+            0,
+            self.token_counter.count_tokens(bundle.raw_text)
+            - self.token_counter.count_tokens(bundle.text),
+        )
         retrieved_ids = list(bundle.report_metadata)
 
         if state.get("compare_by"):

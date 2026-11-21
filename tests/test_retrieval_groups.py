@@ -132,8 +132,8 @@ def test_both_groups_are_represented_in_a_comparison():
 
     levels = {chunk.report_id: chunk.metadata["achievement_level"] for chunk in chunks}
     assert groups == [
-        {"label": "juara", "count": 3},
-        {"label": "belum juara", "count": 1},
+        {"label": "meraih penghargaan", "count": 3},
+        {"label": "belum juara (finalis)", "count": 1},
     ]
     assert levels["RPT0001"] == "Juara 2"
     assert levels["RPT0009"] == "Finalis"
@@ -165,7 +165,7 @@ def test_an_empty_group_is_reported_explicitly():
     )
 
     assert chunks
-    assert groups[1] == {"label": "belum juara", "count": 0}
+    assert groups[1] == {"label": "belum juara (finalis)", "count": 0}
 
 
 def test_a_contradictory_filter_makes_the_group_empty_without_dropping_it():
@@ -179,8 +179,8 @@ def test_a_contradictory_filter_makes_the_group_empty_without_dropping_it():
     )
 
     assert groups == [
-        {"label": "juara", "count": 0},
-        {"label": "belum juara", "count": 1},
+        {"label": "meraih penghargaan", "count": 0},
+        {"label": "belum juara (finalis)", "count": 1},
     ]
     assert [chunk.report_id for chunk in chunks] == ["RPT0002"]
 
@@ -216,13 +216,13 @@ def structured_payload():
         {
             "groups": [
                 {
-                    "label": "juara",
+                    "label": "meraih penghargaan",
                     "points": [
                         {"text": "Tim juara fokus pada validasi pasar.", "cite": ["LAP1"]}
                     ],
                 },
                 {
-                    "label": "belum juara",
+                    "label": "belum juara (finalis)",
                     "points": [
                         {"text": "Tim finalis kekurangan waktu uji coba.", "cite": ["LAP2"]}
                     ],
@@ -259,8 +259,8 @@ def test_the_pipeline_passes_the_group_status_to_the_answer_model():
 
     answer_prompt = llm.calls[1]["user_prompt"]
     assert "Kelompok pembanding yang dipakai" in answer_prompt
-    assert "- juara: 1 laporan" in answer_prompt
-    assert "- belum juara: 1 laporan" in answer_prompt
+    assert "- meraih penghargaan: 1 laporan" in answer_prompt
+    assert "- belum juara (finalis): 1 laporan" in answer_prompt
 
 
 def test_an_empty_group_reaches_the_answer_prompt_as_a_limitation():

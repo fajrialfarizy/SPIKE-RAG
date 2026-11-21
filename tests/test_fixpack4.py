@@ -92,7 +92,7 @@ def payload(groups, differences=None):
 
 # -- J1a: the schema -------------------------------------------------------
 def test_the_schema_is_strict_and_has_no_optional_object():
-    schema = compare_answer.build_schema(["juara", "belum juara"])
+    schema = compare_answer.build_schema(["meraih penghargaan", "belum juara (finalis)"])
 
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == {"groups", "differences"}
@@ -102,7 +102,7 @@ def test_the_schema_is_strict_and_has_no_optional_object():
     point_item = group_item["properties"]["points"]["items"]
     assert point_item["additionalProperties"] is False
     assert set(point_item["required"]) == {"text", "cite"}
-    assert group_item["properties"]["label"]["enum"] == ["juara", "belum juara"]
+    assert group_item["properties"]["label"]["enum"] == ["meraih penghargaan", "belum juara (finalis)"]
 
 
 def test_the_structured_call_uses_json_schema_and_the_compare_cap():
@@ -110,11 +110,11 @@ def test_the_structured_call_uses_json_schema_and_the_compare_cap():
         payload(
             [
                 {
-                    "label": "juara",
+                    "label": "meraih penghargaan",
                     "points": [{"text": "Tim juara memvalidasi masalah lewat wawancara.", "cite": ["LAP1"]}],
                 },
                 {
-                    "label": "belum juara",
+                    "label": "belum juara (finalis)",
                     "points": [{"text": "Tim finalis mengandalkan data teknis.", "cite": ["LAP4"]}],
                 },
             ]
@@ -136,13 +136,13 @@ def test_a_valid_payload_is_rendered_by_the_backend_with_citations_at_the_end():
         payload(
             [
                 {
-                    "label": "juara",
+                    "label": "meraih penghargaan",
                     "points": [
                         {"text": "Tim juara memvalidasi masalah lewat wawancara.", "cite": ["LAP1"]}
                     ],
                 },
                 {
-                    "label": "belum juara",
+                    "label": "belum juara (finalis)",
                     "points": [
                         {"text": "Tim finalis mengandalkan data teknis.", "cite": ["LAP4"]}
                     ],
@@ -161,8 +161,8 @@ def test_a_valid_payload_is_rendered_by_the_backend_with_citations_at_the_end():
 
     assert result.status is AnswerStatus.ANSWERED
     lines = result.answer.splitlines()
-    assert "**juara**" in lines
-    assert "**belum juara**" in lines
+    assert "Tim yang meraih penghargaan (Juara 1-3, Juara Harapan, Most Aspiring)" in lines
+    assert "Tim belum juara (finalis)" in lines
     assert "**Perbedaan utama**" in lines
     bullet = next(line for line in lines if line.startswith("- Tim juara memvalidasi"))
     assert bullet.endswith("[RPT1001]")
@@ -179,7 +179,7 @@ def test_a_cross_group_citation_is_removed_and_counted():
         payload(
             [
                 {
-                    "label": "juara",
+                    "label": "meraih penghargaan",
                     "points": [
                         {
                             "text": "Tim juara memvalidasi masalah.",
@@ -187,7 +187,7 @@ def test_a_cross_group_citation_is_removed_and_counted():
                         }
                     ],
                 },
-                {"label": "belum juara", "points": []},
+                {"label": "belum juara (finalis)", "points": []},
             ]
         )
     )
@@ -207,13 +207,13 @@ def test_a_point_with_only_unknown_or_cross_group_citations_is_dropped():
         payload(
             [
                 {
-                    "label": "juara",
+                    "label": "meraih penghargaan",
                     "points": [
                         {"text": "Klaim tanpa sumber valid.", "cite": ["LAP9", "LAP4"]}
                     ],
                 },
                 {
-                    "label": "belum juara",
+                    "label": "belum juara (finalis)",
                     "points": [{"text": "Tim finalis mengandalkan data.", "cite": ["LAP4"]}],
                 },
             ]
@@ -234,17 +234,17 @@ def test_a_group_without_valid_points_gets_the_fixed_sentence():
         payload(
             [
                 {
-                    "label": "juara",
+                    "label": "meraih penghargaan",
                     "points": [{"text": "Tim juara memvalidasi masalah.", "cite": ["LAP1"]}],
                 },
-                {"label": "belum juara", "points": []},
+                {"label": "belum juara (finalis)", "points": []},
             ]
         )
     )
 
     result = pipeline.run(QUESTION)
 
-    assert "**belum juara**" in result.answer
+    assert "Tim belum juara (finalis)" in result.answer
     assert config.COMPARE_EMPTY_GROUP in result.answer
 
 
@@ -253,7 +253,7 @@ def test_an_unknown_label_is_ignored():
         payload(
             [
                 {
-                    "label": "juara",
+                    "label": "meraih penghargaan",
                     "points": [{"text": "Tim juara memvalidasi masalah.", "cite": ["LAP1"]}],
                 },
                 {"label": "tim lain", "points": [{"text": "Klaim.", "cite": ["LAP4"]}]},
@@ -272,7 +272,7 @@ def test_no_alias_token_survives_in_the_rendered_text():
         payload(
             [
                 {
-                    "label": "juara",
+                    "label": "meraih penghargaan",
                     "points": [
                         {
                             "text": "Tim juara (LAP1) memvalidasi masalah.",
@@ -280,7 +280,7 @@ def test_no_alias_token_survives_in_the_rendered_text():
                         }
                     ],
                 },
-                {"label": "belum juara", "points": []},
+                {"label": "belum juara (finalis)", "points": []},
             ]
         )
     )
@@ -293,7 +293,7 @@ def test_no_alias_token_survives_in_the_rendered_text():
 
 def test_nothing_traceable_returns_no_source():
     pipeline, _ = comparison_pipeline(
-        payload([{"label": "juara", "points": []}, {"label": "belum juara", "points": []}])
+        payload([{"label": "meraih penghargaan", "points": []}, {"label": "belum juara (finalis)", "points": []}])
     )
 
     result = pipeline.run(QUESTION)
@@ -317,7 +317,7 @@ def test_invalid_json_is_a_technical_error_without_a_retry_or_raw_text():
 
 def test_a_truncated_payload_is_a_technical_error():
     pipeline, llm = comparison_pipeline(
-        payload([{"label": "juara", "points": []}, {"label": "belum juara", "points": []}]),
+        payload([{"label": "meraih penghargaan", "points": []}, {"label": "belum juara (finalis)", "points": []}]),
         structured_finish_reasons=["length"],
     )
 
@@ -342,7 +342,7 @@ def test_parenthesised_alias_names_move_to_the_end_of_the_sentence():
     assert "(" not in result.text
     assert (
         "Tim juara menekankan validasi masalah lewat wawancara "
-        "[RPT0002], [RPT0003]."
+        "[RPT0002] [RPT0003]."
     ) in result.text
     assert result.cited_report_ids == ["RPT0002", "RPT0003"]
 

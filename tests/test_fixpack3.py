@@ -257,7 +257,7 @@ def comparison_base(
         {
             "groups": [
                 {
-                    "label": "juara",
+                    "label": "meraih penghargaan",
                     "points": [
                         {
                             "text": "Tim juara memvalidasi masalah sebelum final.",
@@ -265,7 +265,7 @@ def comparison_base(
                         }
                     ],
                 },
-                {"label": "belum juara", "points": []},
+                {"label": "belum juara (finalis)", "points": []},
             ],
             "differences": [],
         }
@@ -291,8 +291,8 @@ def test_each_group_contributes_one_chunk_per_distinct_report():
     result = pipeline.run("Bandingkan tim juara dan belum juara.")
 
     assert result.debug.groups == [
-        {"label": "juara", "count": config.COMPARE_REPORTS_PER_GROUP},
-        {"label": "belum juara", "count": config.COMPARE_REPORTS_PER_GROUP},
+        {"label": "meraih penghargaan", "count": config.COMPARE_REPORTS_PER_GROUP},
+        {"label": "belum juara (finalis)", "count": config.COMPARE_REPORTS_PER_GROUP},
     ]
     report_ids = [item["chunk_id"] for item in result.debug.retrieved]
     assert len(report_ids) == len(set(report_ids))
@@ -347,11 +347,11 @@ def test_trimming_drops_whole_reports_and_keeps_two_per_group():
         )
 
     chunks = [
-        grouped("RPT1001", 0.95, "juara"),
-        grouped("RPT1002", 0.90, "juara"),
-        grouped("RPT1003", 0.85, "juara"),
-        grouped("RPT2001", 0.60, "belum juara"),
-        grouped("RPT2002", 0.55, "belum juara"),
+        grouped("RPT1001", 0.95, "meraih penghargaan"),
+        grouped("RPT1002", 0.90, "meraih penghargaan"),
+        grouped("RPT1003", 0.85, "meraih penghargaan"),
+        grouped("RPT2001", 0.60, "belum juara (finalis)"),
+        grouped("RPT2002", 0.55, "belum juara (finalis)"),
     ]
     limit = counter.count_tokens(
         builder.build_chunks([chunks[0], chunks[1], chunks[3], chunks[4]]).text
@@ -361,8 +361,8 @@ def test_trimming_drops_whole_reports_and_keeps_two_per_group():
 
     assert dropped == ["RPT1003:evaluasi_tim:01"]
     assert set(bundle.report_metadata) == {"RPT1001", "RPT1002", "RPT2001", "RPT2002"}
-    assert "<kelompok nama=\"juara\">" in bundle.text
-    assert "<kelompok nama=\"belum juara\">" in bundle.text
+    assert "<kelompok nama=\"meraih penghargaan\">" in bundle.text
+    assert "<kelompok nama=\"belum juara (finalis)\">" in bundle.text
 
 
 def test_the_coverage_line_reports_shown_against_available_reports():

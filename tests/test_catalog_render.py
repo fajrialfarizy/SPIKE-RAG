@@ -24,12 +24,12 @@ def report(
 @pytest.mark.parametrize(
     "level,label",
     [
-        ("Juara 1", "juara"),
-        ("Juara 2", "juara"),
-        ("Juara 3", "juara"),
-        ("Juara Harapan", "juara"),
-        ("Most Aspiring dan penghargaan serupa", "juara"),
-        ("Finalis", "belum juara"),
+        ("Juara 1", "meraih penghargaan"),
+        ("Juara 2", "meraih penghargaan"),
+        ("Juara 3", "meraih penghargaan"),
+        ("Juara Harapan", "meraih penghargaan"),
+        ("Most Aspiring dan penghargaan serupa", "meraih penghargaan"),
+        ("Finalis", "belum juara (finalis)"),
     ],
 )
 def test_every_achievement_level_maps_to_its_configured_group(level, label):
@@ -56,7 +56,7 @@ def test_the_summary_counts_type_year_and_achievement_group():
 
     assert "- Jenis kompetisi: Business Plan (1); Essay (1)" in text
     assert "- Tahun: 2023 (1); 2024 (1)" in text
-    assert "- Pencapaian: belum juara (1); juara (1)" in text
+    assert "- Pencapaian: belum juara (finalis) (1); meraih penghargaan (1)" in text
 
 
 def test_rows_are_ordered_by_report_id_and_show_the_documented_fields():

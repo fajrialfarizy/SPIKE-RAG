@@ -239,6 +239,7 @@ def validate_payload(
         "cite_over_limit": 0,
         "points_over_limit": 0,
         "differences_over_limit": 0,
+        "difference_missing_group": 0,
     }
 
     by_label: Dict[str, List[ComparePoint]] = {label: [] for label in labels}
@@ -275,6 +276,11 @@ def validate_payload(
             by_label[label].append(point)
 
     differences: List[ComparePoint] = []
+    # Fix pack L3c: a difference must cite at least one alias from every group
+    # that has documents; otherwise it is dropped and counted.
+    active_labels = {
+        report_group.get(report_id) for report_id in retrieved
+    } & set(labels)
     raw_differences = payload.get("differences")
     if isinstance(raw_differences, list):
         for raw_point in raw_differences:
@@ -292,6 +298,12 @@ def validate_payload(
                 require_all_labels=mentioned if len(mentioned) > 1 else (),
             )
             if point is None:
+                continue
+            cited_labels = {
+                report_group.get(report_id) for report_id in point.report_ids
+            }
+            if len(active_labels) < 2 or not active_labels.issubset(cited_labels):
+                incidents["difference_missing_group"] += 1
                 continue
             if len(differences) >= config.COMPARE_DIFFERENCES_MAX:
                 incidents["differences_over_limit"] += 1
@@ -324,17 +336,25 @@ def validate_payload(
 
 
 def _citation(report_ids: Sequence[str]) -> str:
-    return config.COMPARE_CITATION_TEMPLATE.format(
-        report_ids=config.COMPARE_CITATION_JOINER.join(report_ids)
+    """One citation format everywhere: [RPT0001] [RPT0002] (fix pack L6)."""
+    return config.CITATION_GROUP_JOINER.join(
+        config.CITATION_GROUP_TEMPLATE.format(report_id=report_id)
+        for report_id in report_ids
     )
 
 
-def render_answer(validation: CompareValidation) -> str:
+def render_answer(
+    validation: CompareValidation, compare_by: Optional[str] = None
+) -> str:
     """Render validated sections, differences and their citations (no counts)."""
     blocks: List[str] = []
 
     for section in validation.sections:
-        lines = [config.COMPARE_GROUP_HEADING_TEMPLATE.format(label=section.label)]
+        lines = [
+            config.COMPARE_GROUP_HEADING_TEMPLATE.format(
+                label=config.comparison_display_label(compare_by or "", section.label)
+            )
+        ]
         if section.points:
             lines.extend(
                 config.COMPARE_BULLET_TEMPLATE.format(
