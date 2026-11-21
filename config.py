@@ -50,6 +50,29 @@ CHUNK_TARGET_MAX_TOKENS = 450
 CHUNK_HARD_LIMIT_TOKENS = 512
 CHUNK_OVERLAP_TOKENS = 0
 
+# PDF reflow (fix pack L1). PyMuPDF returns one "\n" per visual line and no
+# paragraph marker, so the parser rebuilds paragraphs before chunking:
+# - a blank line keeps a paragraph break,
+# - a list-item marker starts a new paragraph,
+# - a line ending in a hyphen followed by a lowercase line is joined without the
+#   hyphen ("terburu-" + "buru" -> "terburu-buru"),
+# - a detected heading is never joined to the line below it.
+PDF_PARAGRAPH_SEPARATOR = "\n\n"
+PDF_LINE_JOIN_SEPARATOR = " "
+PDF_HYPHEN_BREAK_CHARS = ("-", "\u2010")
+PATTERN_PDF_LIST_ITEM = re.compile(r"^(?:\d{1,2}[.)]|[-*\u2022])\s+")
+# A chunk may only end at a sentence end, at the end of a list item, or inside a
+# single sentence that alone exceeds the token budget (word-window split).
+CHUNK_TERMINAL_PUNCTUATION = (".", "?", "!", "\u2026")
+PATTERN_CHUNK_PARAGRAPH_BREAK = re.compile(r"\n\s*\n")
+CHUNK_PARAGRAPH_SEPARATOR = "\n\n"
+
+# Context assembly: blank lines between sentences of the same paragraph are
+# collapsed, so a wrapped line never costs tokens or reaches the model as a
+# paragraph break.
+CONTEXT_PARAGRAPH_SEPARATOR = "\n\n"
+PATTERN_CONTEXT_BLANK_RUN = re.compile(r"\n{3,}")
+
 # Character Limits per Section (PRD 6.2)
 SECTION_CHAR_LIMITS = {
     "judul_ide": 200,
@@ -427,31 +450,56 @@ COMPARISON_AWARD_LEVELS = (
     "Juara Harapan",
     "Most Aspiring dan penghargaan serupa",
 )
+# Fix pack L2: "juara" was misleading because the award group also contains
+# Juara Harapan and Most Aspiring. The label is the model-facing name (schema
+# enum, <kelompok nama=...>, <dokumen kelompok=...>, coverage line); the display
+# label is the plain heading the backend renders.
 COMPARISON_GROUPS = {
     "achievement_group": (
         {
-            "label": "juara",
+            "label": "meraih penghargaan",
+            "display_label": (
+                "Tim yang meraih penghargaan (Juara 1-3, Juara Harapan, Most Aspiring)"
+            ),
             "filter": {"achievement_level": COMPARISON_AWARD_LEVELS},
-            # Fix pack J3b: the coverage sentence names the group in plain
-            # language, so a student does not have to decode "laporan juara".
-            "coverage_label": "meraih penghargaan",
         },
         {
-            "label": "belum juara",
+            "label": "belum juara (finalis)",
+            "display_label": "Tim belum juara (finalis)",
             "filter": {"achievement_level": ("Finalis",)},
-            "coverage_label": "belum juara (finalis)",
         },
     ),
     "competition_type": (
-        {"label": "Business Plan", "filter": {"competition_type": ("Business Plan",)}},
-        {"label": "Business Case", "filter": {"competition_type": ("Business Case",)}},
-        {"label": "Essay", "filter": {"competition_type": ("Essay",)}},
+        {
+            "label": "Business Plan",
+            "display_label": "Business Plan",
+            "filter": {"competition_type": ("Business Plan",)},
+        },
+        {
+            "label": "Business Case",
+            "display_label": "Business Case",
+            "filter": {"competition_type": ("Business Case",)},
+        },
+        {
+            "label": "Essay",
+            "display_label": "Essay",
+            "filter": {"competition_type": ("Essay",)},
+        },
         {
             "label": "Karya Tulis Ilmiah",
+            "display_label": "Karya Tulis Ilmiah",
             "filter": {"competition_type": ("Karya Tulis Ilmiah",)},
         },
     ),
 }
+
+
+def comparison_display_label(compare_by: str, label: str) -> str:
+    """Plain heading for one group label (the model-facing name by default)."""
+    for group in COMPARISON_GROUPS.get(compare_by, ()):
+        if group["label"] == label:
+            return group.get("display_label") or label
+    return label
 
 # Retrieval limits per mode: k chunks returned, max chunks per report.
 RETRIEVAL_LIMITS = {
@@ -708,18 +756,22 @@ SETTINGS_ENV_KB_WORK_DIR = "KB_WORK_DIR"
 # backend validates it and writes every heading, citation and count itself.
 COMPARE_JSON_SCHEMA_NAME = "compare_answer"
 COMPARE_POINTS_PER_GROUP_MAX = 4
-COMPARE_DIFFERENCES_MAX = 3
+COMPARE_DIFFERENCES_MAX = 2
 COMPARE_POINT_MAX_WORDS = 40
 COMPARE_CITE_MIN = 1
 COMPARE_CITE_MAX = 2
-COMPARE_GROUP_HEADING_TEMPLATE = "**{label}**"
+# The backend writes the heading, so it carries no Markdown emphasis at all: a
+# bold label line was counted as prose and inflated metrics (fix pack L2).
+COMPARE_GROUP_HEADING_TEMPLATE = "{label}"
 COMPARE_DIFFERENCES_HEADING = "**Perbedaan utama**"
 COMPARE_EMPTY_GROUP = (
     "Tidak ada poin yang dapat ditelusuri ke dokumen untuk kelompok ini."
 )
 COMPARE_BULLET_TEMPLATE = "- {text} {citations}"
-COMPARE_CITATION_TEMPLATE = "[{report_ids}]"
-COMPARE_CITATION_JOINER = ", "
+# One citation format everywhere (fix pack L6): separate brackets, one space,
+# never a comma inside the brackets.
+CITATION_GROUP_TEMPLATE = "[{report_id}]"
+CITATION_GROUP_JOINER = " "
 COMPARE_SECTION_SEPARATOR = "\n\n"
 COMPARE_LINE_SEPARATOR = "\n"
 
@@ -727,7 +779,32 @@ COMPARE_LINE_SEPARATOR = "\n"
 # an answer. A sentence counts when it contains a negation marker AND one of the
 # subject markers, e.g. "Tim belum melakukan simulasi" or "tidak ada anggota yang
 # pasif" (the second is legitimate, which is why this is not a guardrail).
-NEGATION_MARKERS = ("tidak", "belum", "kurang", "tanpa", "tak", "bukan")
+NEGATION_MARKERS = (
+    "tidak",
+    "belum",
+    "kurang",
+    "tanpa",
+    "tak",
+    "bukan",
+    "mengabaikan",
+    "gagal",
+)
+# Group and heading labels are not claims. These phrases are removed before
+# matching, so "Tim belum juara kurang menyiapkan riset" counts once ("kurang")
+# while the label line "belum juara" counts zero.
+NEGATION_LABEL_PHRASES = (
+    "Tim yang meraih penghargaan (Juara 1-3, Juara Harapan, Most Aspiring)",
+    "Tim belum juara (finalis)",
+    "belum juara (finalis)",
+    "belum juara",
+    "meraih penghargaan",
+    "tim belum juara (finalis)",
+    "tim belum juara",
+    "tim yang meraih penghargaan",
+)
+# Backend-written lines are skipped entirely: coverage, source block title/rows.
+NEGATION_SKIP_LINE_PREFIXES = ("Ringkasan ini didasarkan pada", "**Sumber**")
+PATTERN_NEGATION_SOURCE_ROW = re.compile(r"^-\s*RPT[0-9]{4,}\b")
 NEGATION_SUBJECT_MARKERS = (
     "tim",
     "laporan",
