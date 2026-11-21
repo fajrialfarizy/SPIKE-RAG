@@ -12,11 +12,15 @@ app_texts.py                  # Seluruh teks antarmuka Bahasa Indonesia
 config.py                     # Semua parameter (tanpa magic numbers)
 core/                         # Engine RAG + settings, auth, kb_sync, sqlite_compat
 ingestion/                    # Ekstraksi PDF, chunker, embedder, repositori
-scripts/                      # make_dummy_corpus, run_ingestion, smoke_groq, make_password_hash
+scripts/                      # make_dummy_corpus, run_ingestion, smoke_groq, show_context
 tests/                        # Unit test offline (+ test bertanda `slow`)
 .streamlit/config.toml        # Konfigurasi Streamlit (tanpa usage stats)
 .streamlit/secrets.toml.example
+requirements.txt              # runtime aplikasi (yang dipasang Streamlit Cloud)
+requirements-ingest.txt       # ingestion/Colab: pymupdf, reportlab, gspread, pillow
+requirements-dev.txt          # test/dev: pytest (+ onnxruntime untuk eksperimen)
 docs/FIRST_DEPLOY_CHECKLIST.md
+docs/ONNX_PLAN.md             # rencana runtime ONNX (belum diimplementasikan)
 ```
 
 ## Persiapan
@@ -24,8 +28,19 @@ docs/FIRST_DEPLOY_CHECKLIST.md
 ```bash
 python -m venv .venv
 # Windows: .venv\Scripts\activate    Linux/macOS: source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
+
+Tiga berkas kebutuhan dipisah menurut siapa yang memasangnya:
+
+| Berkas | Dipasang oleh | Isi |
+| --- | --- | --- |
+| `requirements.txt` | Streamlit Cloud | Chroma, Groq, Streamlit, Google Drive client, embedder |
+| `requirements-ingest.txt` | Colab/ingestion | `-r requirements.txt` + pymupdf, reportlab, gspread, pillow |
+| `requirements-dev.txt` | pengembangan lokal | `-r requirements.txt -r requirements-ingest.txt` + pytest |
+
+`tests/test_import_hygiene.py` gagal bila `app.py`/`core/` mengimpor paket ingestion
+(pymupdf, gspread, reportlab) atau pytest.
 
 Buat korpus dummy lalu bangun knowledge base lokal:
 
@@ -84,8 +99,9 @@ pytest -m slow         # test yang memuat model e5 (butuh model terunduh)
 
 ```bash
 python -m core.cli "Apa kendala tim pada business plan?" --debug   # pipeline via CLI
+python scripts/show_context.py --question "..." --compare-by achievement_group  # konteks saja, tanpa LLM
 python scripts/smoke_groq.py --chroma-dir chroma_db --delay 20     # smoke Groq (butuh GROQ_API_KEY)
-# Opsi: --only id_route,catalog  --show-raw  --token-budget 30000  --answer-effort low
+# Opsi: --only id_route,catalog  --show-raw  --show-context  --token-budget 30000  --answer-effort low
 ```
 
 ## Catatan SQLite
