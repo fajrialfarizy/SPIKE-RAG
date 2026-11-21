@@ -10,6 +10,7 @@ an explicit double from tests/stubs.py instead of relying on a silent fallback.
 """
 
 import threading
+import time
 from typing import Any, List, Optional, Sequence
 
 import config
@@ -31,6 +32,8 @@ class E5Embedder:
         self.model_name = model_name
         self.expected_dimension = expected_dimension
         self._model = model
+        # Wall time spent in the lazy model load, for the app startup log.
+        self.load_seconds = 0.0
         # Streamlit serves sessions in threads and they share one embedder, so
         # the lazy model load and the encode call are serialized.
         self._lock = threading.Lock()
@@ -47,8 +50,10 @@ class E5Embedder:
                 f"model '{self.model_name}' cannot be loaded."
             ) from exc
 
+        started = time.perf_counter()
         try:
             self._model = SentenceTransformer(self.model_name)
+            self.load_seconds = round(time.perf_counter() - started, 2)
         except Exception as exc:  # pragma: no cover - environment dependent
             raise EmbeddingError(
                 f"Could not load the configured embedding model '{self.model_name}'. "

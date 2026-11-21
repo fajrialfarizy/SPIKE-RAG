@@ -25,6 +25,10 @@ from ingestion.repos.base import (
 logger = logging.getLogger(__name__)
 
 
+class DriveArtifactError(RuntimeError):
+    """Raised when the artifact cannot be resolved to exactly one Drive file."""
+
+
 def column_letter(index_1based: int) -> str:
     """Convert a 1-based column index to its spreadsheet letter (1 -> A, 27 -> AA)."""
     if index_1based < 1:
@@ -247,8 +251,45 @@ class GoogleDriveRepo(DriveRepo):
             logger.error("Failed to download Drive file %s: %s", file_id, str(e))
             return False
 
+    def _find_files(self, remote_filename: str) -> List[Dict[str, Any]]:
+        """
+        Resolve an artifact by exact name inside the configured folder.
+
+        Zero or several matches is an error: guessing would either create a
+        duplicate or publish the wrong zip (fix pack P2).
+        """
+        query = (
+            f"name = '{remote_filename}' and '{self.folder_id}' in parents "
+            f"and trashed = false"
+        )
+        response = (
+            self._get_service()
+            .files()
+            .list(
+                q=query,
+                spaces="drive",
+                fields="files(id, name, modifiedTime, size)",
+                pageSize=10,
+            )
+            .execute()
+        )
+        files = list(response.get("files") or [])
+        if len(files) > 1:
+            raise DriveArtifactError(
+                f"'{remote_filename}' appears {len(files)} times in Drive folder "
+                f"'{self.folder_id}'. Keep exactly one copy before re-running."
+            )
+        return files
+
     def upload_artifact(self, local_path: str, remote_filename: str) -> str:
-        """Upload an artifact to the designated Drive folder."""
+        """
+        Upload or replace an artifact, never duplicating it.
+
+        An existing file is updated in place by its Drive file id; only a missing
+        file is created. The caller uploads the zip before the manifest, so a
+        failed manifest upload leaves the old manifest pointing at the old zip and
+        the app refuses the mismatch instead of serving half an artifact.
+        """
         from googleapiclient.http import MediaFileUpload
 
         service = self._get_service()
@@ -256,43 +297,42 @@ class GoogleDriveRepo(DriveRepo):
         if not src.exists():
             raise FileNotFoundError(f"Local artifact not found: {local_path}")
 
+        media = MediaFileUpload(str(src), resumable=True)
+        existing = self._find_files(remote_filename)
+        if existing:
+            file_id = str(existing[0]["id"])
+            service.files().update(
+                fileId=file_id, media_body=media, fields="id"
+            ).execute()
+            logger.info(
+                "Replaced artifact %s in Drive (id %s)", remote_filename, file_id
+            )
+            return file_id
+
         file_metadata = {
             "name": remote_filename,
             "parents": [self.folder_id],
         }
-        media = MediaFileUpload(str(src), resumable=True)
         file = (
             service.files()
             .create(body=file_metadata, media_body=media, fields="id")
             .execute()
         )
-        file_id = file.get("id", "")
+        file_id = str(file.get("id", ""))
+        if not file_id:
+            raise DriveArtifactError(
+                f"Drive did not return an id for the uploaded '{remote_filename}'."
+            )
         logger.info("Uploaded artifact %s to Drive with id %s", remote_filename, file_id)
         return file_id
 
     def download_artifact(self, remote_filename: str, destination_path: str) -> bool:
-        """Search and download an artifact by filename from the designated Drive folder."""
-        service = self._get_service()
-        dest = Path(destination_path)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-
-        query = (
-            f"name = '{remote_filename}' and '{self.folder_id}' in parents "
-            f"and trashed = false"
-        )
-        results = (
-            service.files()
-            .list(q=query, spaces="drive", fields="files(id, name)")
-            .execute()
-        )
-        items = results.get("files", [])
+        """Download the one artifact with this exact name, or fail loudly."""
+        items = self._find_files(remote_filename)
         if not items:
-            logger.warning(
-                "Remote artifact %s not found in folder %s",
-                remote_filename,
-                self.folder_id,
+            raise DriveArtifactError(
+                f"'{remote_filename}' was not found in Drive folder "
+                f"'{self.folder_id}'."
             )
-            return False
 
-        remote_file_id = items[0]["id"]
-        return self.download_pdf(remote_file_id, destination_path)
+        return self.download_pdf(str(items[0]["id"]), destination_path)

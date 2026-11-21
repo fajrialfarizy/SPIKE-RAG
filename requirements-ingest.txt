@@ -1,0 +1,31 @@
+# INGESTION / COLAB ONLY (fix pack P1). Never installed by Streamlit Cloud.
+#
+# Used by ingestion/ and scripts/make_dummy_corpus.py: PDF parsing, the synthetic
+# PDF generator, and the writable Google Sheets/Drive service account.
+#
+#     pip install -r requirements-ingest.txt
+#
+# The pins and their sources are the same checks as requirements.txt (2026-11-20,
+# PyPI JSON API); this file only moves them out of the app runtime.
+
+-r requirements.txt
+
+# PDF Text Extraction (ingestion/pdf_parser.py)
+# Source: https://pymupdf.readthedocs.io ; PyPI pymupdf
+# Public API is the `pymupdf` module; `fitz` is the legacy alias.
+pymupdf==2.1
+
+# Synthetic PDF Generator for the dummy corpus (scripts/make_dummy_corpus.py)
+# Source: https://docs.reportlab.com ; PyPI reportlab
+reportlab==5.1.0
+# PyPI pillow (not latest: 13.0.0)
+pillow==12.3.0
+
+# Google Sheets client for the ingestion (write) service account
+# Source: https://docs.gspread.org ; PyPI gspread (not latest: 6.2.1)
+gspread==6.1.4
+
+# OAuth helper kept for the documented Sheets/Drive examples; the service-account
+# path does not need it at runtime.
+# Source: https://google-auth-oauthlib.readthedocs.io ; PyPI google-auth-oauthlib
+google-auth-oauthlib==1.5.0

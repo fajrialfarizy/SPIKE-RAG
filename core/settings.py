@@ -41,6 +41,9 @@ class KBSettings:
     local_dir: Path
     manifest_path: Path = config.ARTIFACT_MANIFEST_PATH
     drive_folder_id: Optional[str] = None
+    # Exact file ids win over name lookup when configured (fix pack P2).
+    drive_manifest_file_id: Optional[str] = None
+    drive_artifact_file_id: Optional[str] = None
     drive_manifest_name: str = config.KB_DRIVE_MANIFEST_NAME
     drive_artifact_name: str = config.KB_DRIVE_ARTIFACT_NAME
     work_dir: Path = config.KB_WORK_DIR
@@ -157,6 +160,18 @@ def load_settings(
         environ,
         config.SETTINGS_ENV_KB_DRIVE_FOLDER_ID,
     )
+    drive_manifest_file_id = _pick(
+        kb_section,
+        "manifest_file_id",
+        environ,
+        config.SETTINGS_ENV_KB_DRIVE_MANIFEST_FILE_ID,
+    )
+    drive_artifact_file_id = _pick(
+        kb_section,
+        "artifact_file_id",
+        environ,
+        config.SETTINGS_ENV_KB_DRIVE_ARTIFACT_FILE_ID,
+    )
     if source == config.KB_SOURCE_DRIVE and not drive_folder_id:
         raise SettingsError(
             "[kb] drive_folder_id is required when [kb] source is 'drive'."
@@ -180,6 +195,8 @@ def load_settings(
             local_dir=Path(local_dir_value),
             manifest_path=Path(manifest_path_value),
             drive_folder_id=drive_folder_id,
+            drive_manifest_file_id=drive_manifest_file_id,
+            drive_artifact_file_id=drive_artifact_file_id,
             drive_manifest_name=str(
                 kb_section.get("drive_manifest_name") or config.KB_DRIVE_MANIFEST_NAME
             ),

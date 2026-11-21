@@ -1,4 +1,8 @@
-# Core RAG dependencies pinned for Python 3.12 (Lab Prestasi MVP)
+# APP RUNTIME ONLY (fix pack P1). This is what Streamlit Community Cloud installs.
+#
+# Ingestion-only packages live in requirements-ingest.txt; test/dev packages live
+# in requirements-dev.txt. If a module under app.py or core/ ever needs an
+# ingestion package, the import-hygiene test in tests/test_import_hygiene.py fails.
 #
 # Verification: every pin below was checked on 2026-11-20 against the PyPI JSON API
 # (https://pypi.org/pypi/<package>/json) for existence, latest release and
@@ -6,7 +10,7 @@
 # Packages marked (not latest) are intentionally held at a working version; the
 # newest release at verification time is written next to them.
 #
-# Hosting compatibility note: Colab / Streamlit Community Cloud Linux+Python
+# Hosting compatibility note: Streamlit Community Cloud Linux+Python
 # compatibility of these exact pins is NOT VERIFIED (no Linux host available here).
 
 # Vector Store & Embedding Storage
@@ -21,29 +25,15 @@ groq==1.7.0
 # Source: https://docs.streamlit.io ; PyPI streamlit
 streamlit==1.67.0
 
-# PDF Text Extraction
-# Source: https://pymupdf.readthedocs.io ; PyPI pymupdf
-# Public API is the `pymupdf` module; `fitz` is the legacy alias.
-pymupdf==2.1
-
-# Synthetic PDF Generator (Dummy Corpus)
-# Source: https://docs.reportlab.com ; PyPI reportlab
-reportlab==5.1.0
-
 # Data Validation & Serialization
 # Source: https://docs.pydantic.dev ; PyPI pydantic (not latest: 2.14.4)
 pydantic==2.14.3
 
-# Google Sheets Client
-# Source: https://docs.gspread.org ; PyPI gspread (not latest: 6.2.1)
-gspread==6.1.4
-
-# Google APIs Client & Auth (Google Drive API)
+# Google Drive read-only access for the knowledge-base artifact (core/kb_sync.py).
 # Source: https://developers.google.com/drive/api ; PyPI google-api-python-client
 # (not latest: 2.202.0)
 google-api-python-client==2.162.0
 google-auth==2.62.2
-google-auth-oauthlib==1.5.0
 
 # ML Embedding & Tokenizer Utilities
 # Source: https://huggingface.co/docs/transformers ; PyPI transformers (not latest: 5.23.0)
@@ -53,10 +43,6 @@ sentence-transformers==6.3.0
 # Tokenizer used for chunk token accounting (also a transformers dependency).
 # PyPI tokenizers (not latest: 0.23.3)
 tokenizers==0.22.2
-# Reserved for the documented ONNX alternative of the same model (Brief 5.4).
-# Not used by the current code path.
-# Source: https://onnxruntime.ai ; PyPI onnxruntime
-onnxruntime==1.32.0
 # PyPI numpy (not latest: 2.5.5)
 numpy==2.5.1
 
@@ -66,15 +52,15 @@ psutil==7.2.2
 
 # Streamlit Community Cloud ships an older system SQLite on some images; chromadb
 # requires >= 3.35. This shim is Linux-only and is imported before chromadb when
-# present (see .streamlit config notes in README). It does NOT install on Windows.
+# present (see core/sqlite_compat.py). It does NOT install on Windows.
 # Source: https://docs.trychroma.com/troubleshooting ; PyPI pysqlite3-binary
 pysqlite3-binary==0.5.4.post2; sys_platform == "linux"
 
-# Testing Framework
-# Source: https://docs.pytest.org ; PyPI pytest
-pytest==9.2.0
-
-# Supporting image & http libraries
-# PyPI pillow (not latest: 13.0.0)
-pillow==12.3.0
-requests==2.34.2
+# --- CPU-only torch (NOT VERIFIED ON WINDOWS) ------------------------------
+# `pip install torch` on Linux resolves to the CUDA wheel set (~2.5 GB of CUDA
+# libraries) even on a CPU-only host. A Streamlit Cloud instance has no GPU, so the
+# CPU build is the honest choice. This extra index pin was NOT verified on Windows
+# (this machine resolves torch from the default index); verify on the target host
+# before relying on it. Uncomment when the default install proves too large.
+# --extra-index-url https://download.pytorch.org/whl/cpu
+# torch==2.9.1+cpu

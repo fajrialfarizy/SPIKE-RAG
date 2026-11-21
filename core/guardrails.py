@@ -26,7 +26,7 @@ from typing import Dict, Optional
 
 import config
 from core import prompts
-from ingestion.pii_scrubber import PIIScrubber
+from core.pii import PIIScrubber
 
 
 def detect_instruction_override(question: str) -> Optional[str]:

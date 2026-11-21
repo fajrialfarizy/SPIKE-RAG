@@ -185,11 +185,16 @@ class DriveKBSource:
         folder_id: str,
         service_account_info: Mapping[str, Any],
         manifest_name: str = config.KB_DRIVE_MANIFEST_NAME,
+        manifest_file_id: Optional[str] = None,
+        artifact_file_id: Optional[str] = None,
     ):
         if not folder_id:
             raise KBSyncError("A Drive folder id is required for the drive source.")
         self.folder_id = folder_id
         self.manifest_name = manifest_name
+        # Exact ids from settings skip the name lookup (fix pack P2).
+        self.manifest_file_id = manifest_file_id
+        self.artifact_file_id = artifact_file_id
         self._service_account_info = dict(service_account_info)
         self._service: Optional[Any] = None
 
@@ -248,14 +253,16 @@ class DriveKBSource:
                 _, done = downloader.next_chunk()
 
     def fetch_manifest(self) -> Dict[str, Any]:
+        file_id = self.manifest_file_id or self._find_file_id(self.manifest_name)
         with tempfile.TemporaryDirectory(prefix="kb_manifest_") as tmp:
             path = Path(tmp) / self.manifest_name
-            self._download_to_file(self._find_file_id(self.manifest_name), path)
+            self._download_to_file(file_id, path)
             return _load_manifest_file(path)
 
     def download_artifact(self, manifest: Mapping[str, Any], destination: Path) -> None:
         name = str(manifest.get("zip_filename") or config.KB_DRIVE_ARTIFACT_NAME)
-        self._download_to_file(self._find_file_id(name), destination)
+        file_id = self.artifact_file_id or self._find_file_id(name)
+        self._download_to_file(file_id, destination)
 
 
 class KBSynchronizer:

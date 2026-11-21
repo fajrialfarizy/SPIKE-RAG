@@ -1,0 +1,19 @@
+# TEST / DEVELOPMENT ONLY (fix pack P1). Never installed by Streamlit Cloud.
+#
+# The test suite exercises both the app runtime and the ingestion repositories, so
+# this file pulls both requirement sets plus pytest.
+#
+#     pip install -r requirements-dev.txt
+
+-r requirements.txt
+-r requirements-ingest.txt
+
+# Testing Framework
+# Source: https://docs.pytest.org ; PyPI pytest
+pytest==9.2.0
+
+# Reserved for the documented ONNX alternative of the same embedding model
+# (docs/ONNX_PLAN.md, Brief 5.4). Not imported by any current code path, so it is
+# not an app runtime dependency; install it only when experimenting with ONNX.
+# Source: https://onnxruntime.ai ; PyPI onnxruntime
+onnxruntime==1.32.0
