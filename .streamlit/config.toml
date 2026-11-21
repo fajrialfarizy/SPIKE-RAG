@@ -1,0 +1,20 @@
+# Streamlit configuration for Lab Prestasi.
+# Keys verified against `streamlit config show` on Streamlit 1.67.0 (2026-11-20).
+
+[browser]
+# Do not send usage statistics to Streamlit.
+# Note: Streamlit Community Cloud forces this to true for apps it hosts.
+gatherUsageStats = false
+
+[client]
+# Minimal toolbar: no "Deploy" button or developer menu in the shared app.
+toolbarMode = "minimal"
+# Never render tracebacks in the browser.
+showErrorDetails = false
+
+[server]
+headless = true
+
+[runner]
+# Keep the default rerun behaviour; declared so the intent is explicit.
+fastReruns = true
