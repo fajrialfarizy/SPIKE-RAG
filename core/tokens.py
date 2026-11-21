@@ -17,6 +17,7 @@ be loaded, ``E5TokenCounter`` raises.
 from __future__ import annotations
 
 import math
+import threading
 from typing import Any, Optional
 
 import config
@@ -53,6 +54,8 @@ class E5TokenCounter:
     ):
         self.model_name = model_name
         self._tokenizer = tokenizer
+        # Shared across Streamlit session threads; the lazy load must not race.
+        self._lock = threading.Lock()
 
     def _ensure_tokenizer(self):
         if self._tokenizer is not None:
@@ -73,5 +76,6 @@ class E5TokenCounter:
         return self._tokenizer
 
     def count_tokens(self, text: str) -> int:
-        tokenizer = self._ensure_tokenizer()
-        return len(tokenizer.encode(text or "", add_special_tokens=False))
+        with self._lock:
+            tokenizer = self._ensure_tokenizer()
+            return len(tokenizer.encode(text or "", add_special_tokens=False))

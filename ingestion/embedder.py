@@ -9,6 +9,7 @@ configured model cannot be loaded, embedding fails loudly. Offline tests inject
 an explicit double from tests/stubs.py instead of relying on a silent fallback.
 """
 
+import threading
 from typing import Any, List, Optional, Sequence
 
 import config
@@ -30,6 +31,9 @@ class E5Embedder:
         self.model_name = model_name
         self.expected_dimension = expected_dimension
         self._model = model
+        # Streamlit serves sessions in threads and they share one embedder, so
+        # the lazy model load and the encode call are serialized.
+        self._lock = threading.Lock()
 
     def _ensure_model(self):
         if self._model is not None:
@@ -67,16 +71,17 @@ class E5Embedder:
             )
 
     def _encode(self, texts: Sequence[str]) -> List[List[float]]:
-        self._ensure_model()
-        self._check_model_dimension()
+        with self._lock:
+            self._ensure_model()
+            self._check_model_dimension()
 
-        try:
-            vectors = self._model.encode(
-                list(texts), normalize_embeddings=True, convert_to_numpy=True
-            )
-        except TypeError:
-            # Test doubles may not accept every encoder keyword.
-            vectors = self._model.encode(list(texts))
+            try:
+                vectors = self._model.encode(
+                    list(texts), normalize_embeddings=True, convert_to_numpy=True
+                )
+            except TypeError:
+                # Test doubles may not accept every encoder keyword.
+                vectors = self._model.encode(list(texts))
 
         result: List[List[float]] = []
         for vector in vectors:
