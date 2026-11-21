@@ -182,20 +182,36 @@ class ContextBuilder:
                 if group is not None:
                     per_group[group] = per_group.get(group, 0) + 1
 
-            # Grouped comparisons: never remove the last chunk of a group, so the
-            # answer always keeps both sides of the comparison.
-            pool = remaining
             if per_group:
-                pool = [
-                    chunk
-                    for chunk in remaining
-                    if per_group.get(_group_label(chunk), 0) > 1
-                ] or remaining
+                # Grouped comparisons (fix pack H3a): trimming drops whole
+                # lower-ranked reports, but a group keeps at least
+                # COMPARE_MIN_REPORTS_PER_GROUP distinct reports for as long as it
+                # has that many, and no group is emptied.
+                group_reports: Dict[Any, set] = {}
+                for chunk in remaining:
+                    group = _group_label(chunk)
+                    if group is None:
+                        continue
+                    group_reports.setdefault(group, set()).add(chunk.report_id)
 
-            removable = [
-                chunk for chunk in pool if per_report[chunk.report_id] > 1
-            ]
-            pool = removable or pool
+                minimum = config.COMPARE_MIN_REPORTS_PER_GROUP
+
+                def is_removable(chunk: RetrievedChunk) -> bool:
+                    group = _group_label(chunk)
+                    if group is None:
+                        return True
+                    if len(group_reports[group]) > minimum:
+                        return True
+                    # A report with spare chunks can lose one without losing the
+                    # report, which keeps the group represented.
+                    return per_report.get(chunk.report_id, 0) > 1
+
+                pool = [chunk for chunk in remaining if is_removable(chunk)] or remaining
+            else:
+                removable = [
+                    chunk for chunk in remaining if per_report[chunk.report_id] > 1
+                ]
+                pool = removable or remaining
             victim = min(pool, key=lambda chunk: (chunk.score or 0.0, chunk.chunk_id))
             remaining.remove(victim)
 

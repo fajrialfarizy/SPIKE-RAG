@@ -131,7 +131,9 @@ def test_candidates_below_threshold_are_dropped():
     assert selected[0].score == pytest.approx(0.90)
 
 
-def test_specific_mode_caps_three_chunks_per_report():
+def test_specific_mode_caps_two_chunks_per_report():
+    # Fix pack H4b: two chunks per report, so at least three distinct reports can
+    # appear in a six-chunk specific answer.
     matches = [
         match("RPT0001", f"RPT0001:evaluasi_tim:{index:02d}", 0.10 + index * 0.01)
         for index in range(1, 6)
@@ -140,13 +142,13 @@ def test_specific_mode_caps_three_chunks_per_report():
 
     selected = retriever.retrieve("pertanyaan", QueryMode.SPECIFIC, {})
 
+    assert config.RETRIEVAL_SPECIFIC_MAX_CHUNKS_PER_REPORT == 2
     assert len(selected) == config.RETRIEVAL_SPECIFIC_MAX_CHUNKS_PER_REPORT
     assert {chunk.report_id for chunk in selected} == {"RPT0001"}
     # Highest scores win.
     assert [chunk.chunk_id for chunk in selected] == [
         "RPT0001:evaluasi_tim:01",
         "RPT0001:evaluasi_tim:02",
-        "RPT0001:evaluasi_tim:03",
     ]
 
 
@@ -163,7 +165,6 @@ def test_specific_mode_fills_k_across_reports():
     selected = retriever.retrieve("pertanyaan", QueryMode.SPECIFIC, {})
 
     assert [chunk.report_id for chunk in selected] == [
-        "RPT0001",
         "RPT0001",
         "RPT0001",
         "RPT0002",

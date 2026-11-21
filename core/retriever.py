@@ -206,6 +206,67 @@ class Retriever:
 
         return self._select_with_cap(candidates, k, max_per_report)
 
+    @staticmethod
+    def _chunk_rank(chunk: RetrievedChunk) -> tuple:
+        """Prefer evaluasi_tim/saran_pengembangan chunks, then the higher score."""
+        section = str(chunk.metadata.get("section_type") or "")
+        preferred = config.COMPARE_PREFERRED_SECTIONS
+        section_rank = (
+            preferred.index(section) if section in preferred else len(preferred)
+        )
+        return (section_rank, -(chunk.score or 0.0), chunk.chunk_id)
+
+    def _select_one_chunk_per_report(
+        self,
+        candidates: Sequence[RetrievedChunk],
+        max_reports: int,
+    ) -> List[RetrievedChunk]:
+        """One best chunk per distinct report, at most max_reports reports."""
+        best_per_report: Dict[str, RetrievedChunk] = {}
+        for candidate in candidates:
+            current = best_per_report.get(candidate.report_id)
+            if current is None or self._chunk_rank(candidate) < self._chunk_rank(current):
+                best_per_report[candidate.report_id] = candidate
+
+        ordered = sorted(
+            best_per_report.values(),
+            key=lambda chunk: (-(chunk.score or 0.0), chunk.chunk_id),
+        )
+        return ordered[: int(max_reports)]
+
+    def _query_group_reports(
+        self,
+        query_embedding: Sequence[float],
+        where: Optional[Dict[str, Any]],
+        max_reports: int,
+        total: int,
+    ) -> List[RetrievedChunk]:
+        """Grouped comparison: distinct reports, one chunk each (fix pack H3a)."""
+        if max_reports <= 0 or total == 0:
+            return []
+
+        candidate_count = min(
+            int(max_reports) * config.RETRIEVAL_COMPARE_CANDIDATE_MULTIPLIER, total
+        )
+        matches: List[ChunkMatch] = self.knowledge_base.query(
+            query_embedding=query_embedding,
+            where=where,
+            n_results=candidate_count,
+        )
+
+        candidates = [
+            RetrievedChunk(
+                chunk_id=match.chunk_id,
+                report_id=match.report_id,
+                document=match.document,
+                metadata=match.metadata,
+                score=1.0 - match.distance,
+            )
+            for match in matches
+            if (1.0 - match.distance) >= self.similarity_threshold
+        ]
+        return self._select_one_chunk_per_report(candidates, max_reports)
+
     def retrieve_grouped(
         self,
         search_query: str,
@@ -214,11 +275,14 @@ class Retriever:
         compare_by: str,
     ) -> tuple[List[RetrievedChunk], List[Dict[str, Any]]]:
         """
-        One sub-retrieval per comparison group, k split across the groups.
+        One sub-retrieval per comparison group.
 
-        A group whose own filter contradicts the analyzer filters (an empty
-        intersection) matches nothing, and the returned status says so instead of
-        silently dropping the constraint. Results are deduplicated by chunk id.
+        Each group contributes up to COMPARE_REPORTS_PER_GROUP distinct reports
+        with exactly one chunk per report, so one team cannot be represented twice
+        while another team disappears. A group whose own filter contradicts the
+        analyzer filters (an empty intersection) matches nothing, and the returned
+        status says so instead of silently dropping the constraint. Results are
+        deduplicated by chunk id.
         """
         if mode is not QueryMode.CROSS_REPORT:
             raise RetrievalError(
@@ -228,34 +292,29 @@ class Retriever:
             raise RetrievalError(f"Unknown comparison grouping '{compare_by}'.")
 
         groups = config.COMPARISON_GROUPS[compare_by]
-        limits = config.RETRIEVAL_LIMITS[mode.value]
-        total_k = int(limits["k"])
-        max_per_report = int(limits["max_per_report"])
+        max_reports = int(config.COMPARE_REPORTS_PER_GROUP)
 
         total = self.knowledge_base.count_chunks()
         if total == 0:
             return [], []
 
-        base, extra = divmod(total_k, len(groups))
         query_embedding = self._embed_query(search_query)
 
         merged: List[RetrievedChunk] = []
         seen: set = set()
         status: List[Dict[str, Any]] = []
 
-        for index, group in enumerate(groups):
-            group_k = base + (1 if index < extra else 0)
+        for group in groups:
             group_filters = merge_filter_dicts(filters, group.get("filter"))
 
             if any(not values for values in group_filters.values()):
                 status.append({"label": group["label"], "count": 0})
                 continue
 
-            chunks = self._query_chunks(
+            chunks = self._query_group_reports(
                 query_embedding,
                 build_where_filter(group_filters),
-                group_k,
-                max_per_report,
+                max_reports,
                 total,
             )
             status.append({"label": group["label"], "count": len(chunks)})

@@ -35,6 +35,12 @@ from core.citations import (
     process_citations,
 )
 from core.context_builder import ContextBuilder
+from core.coverage import (
+    build_coverage_line,
+    build_cross_report_coverage_line,
+    comparison_totals,
+    count_reports,
+)
 from core.deadline import Deadline, DeadlineExceeded
 from core.guardrails import (
     OutputGuard,
@@ -90,6 +96,8 @@ class DebugInfo:
     # run: never rendered, never written to a log line.
     raw_answers: List[Dict[str, Any]] = field(default_factory=list)
     style: Dict[str, int] = field(default_factory=dict)
+    # Backend-written coverage line for comparison answers (fix pack H3b).
+    coverage: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -114,6 +122,7 @@ class DebugInfo:
             "deadline_budget_seconds": self.deadline_budget_seconds,
             "raw_answers": self.raw_answers,
             "style": self.style,
+            "coverage": self.coverage,
         }
 
 
@@ -185,10 +194,18 @@ class RagPipeline:
             "reasoning_tokens": 0,
             "total_tokens": 0,
         }
+        cached = 0
+        cached_reported = False
         for call in calls:
             usage = call.get("usage") or {}
             for key in totals:
                 totals[key] += int(usage.get(key, 0) or 0)
+            # Fix pack H5b: keep "reported zero" apart from "not reported".
+            if usage.get("cached_tokens") is not None:
+                cached_reported = True
+                cached += int(usage.get("cached_tokens") or 0)
+        if cached_reported:
+            totals["cached_tokens"] = cached
         return totals
 
     @staticmethod
@@ -264,6 +281,7 @@ class RagPipeline:
             "embedding_latency_ms": 0.0,
             "raw_answers": [],
             "style": {},
+            "coverage": "",
         }
 
         def result(
@@ -295,6 +313,7 @@ class RagPipeline:
                 deadline_budget_seconds=self.deadline_budget_seconds,
                 raw_answers=list(state["raw_answers"]),
                 style=dict(state["style"]),
+                coverage=state["coverage"],
             )
             logger.info(
                 "chat_request status=%s mode=%s route=%s chunks=%d latency_ms=%.1f "
@@ -439,6 +458,11 @@ class RagPipeline:
             return self._compose_answer(
                 result, state, chunks, text, analysis.mode, catalog=None,
                 deadline=deadline, hint_extra=hint_extra,
+                max_context_tokens=(
+                    config.MAX_CONTEXT_TOKENS_COMPARE
+                    if analysis.compare_by
+                    else None
+                ),
             )
 
         except LLMRateLimitError as exc:
@@ -475,6 +499,49 @@ class RagPipeline:
 
     # -- answer construction ----------------------------------------------
     @staticmethod
+    def _declared_not_found(result, state: Dict[str, Any], id_route: bool) -> RagResult:
+        """Map a model-declared refusal to its decisive status (fix pack H2)."""
+        if id_route:
+            # Documents WERE retrieved, so the model contradicted the context.
+            # The user gets NO_SOURCE; the incident counts only in logs/debug.
+            state["incidents"]["model_declared_not_found_with_context"] = 1
+            logger.info("chat_model_declared_not_found route=report_id")
+            return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
+        state["incidents"]["model_declared_not_found"] = 1
+        logger.info("chat_model_declared_not_found route=semantic")
+        return result(AnswerStatus.NOT_FOUND, prompts.NOT_FOUND_RESPONSE)
+
+    def _coverage_line(
+        self,
+        state: Dict[str, Any],
+        bundle: Any,
+        chunks: List[RetrievedChunk],
+    ) -> str:
+        """Backend coverage sentence for cross_report answers (fix pack H3b)."""
+        if state.get("mode") != QueryMode.CROSS_REPORT.value:
+            return ""
+
+        filters = state.get("filters") or {}
+        compare_by = state.get("compare_by")
+        if compare_by:
+            group_by_report: Dict[str, str] = {}
+            for chunk in chunks:
+                label = getattr(chunk, "group_label", None)
+                if label is not None:
+                    group_by_report.setdefault(chunk.report_id, label)
+            shown_counts: Dict[str, int] = {}
+            for report_id in bundle.report_metadata:
+                label = group_by_report.get(report_id)
+                if label is not None:
+                    shown_counts[label] = shown_counts.get(label, 0) + 1
+            totals = comparison_totals(self.knowledge_base, filters, compare_by)
+            return build_coverage_line(totals, shown_counts)
+
+        return build_cross_report_coverage_line(
+            len(bundle.report_metadata), count_reports(self.knowledge_base, filters)
+        )
+
+    @staticmethod
     def _raw_answer(attempt: int, completion: Any) -> Dict[str, Any]:
         """Debug-only evidence of one answer attempt (never logged, never shown)."""
         usage = completion.usage
@@ -498,6 +565,7 @@ class RagPipeline:
         deadline: Optional[Deadline] = None,
         hint_extra: str = "",
         id_route: bool = False,
+        max_context_tokens: Optional[int] = None,
     ) -> RagResult:
         if catalog is not None:
             # Fix pack G5: the catalog answer is backend-rendered. The analyzer
@@ -510,7 +578,9 @@ class RagPipeline:
             return result(AnswerStatus.ANSWERED, answer, cited=[])
 
         bundle, dropped = self.context_builder.build_chunks_within_budget(
-            chunks, self.token_counter, self.max_context_tokens
+            chunks,
+            self.token_counter,
+            max_context_tokens or self.max_context_tokens,
         )
         state["context_dropped_chunk_ids"] = dropped
         state["alias_map"] = bundle.alias_map
@@ -518,9 +588,13 @@ class RagPipeline:
         retrieved_ids = list(bundle.report_metadata)
 
         if id_route:
-            # The question names a report id; the model only knows the alias, so
-            # say explicitly that the identifier refers to the shown document.
-            hint_extra = prompts.build_id_route_hint(bundle.alias_map)
+            # Fix pack H1: the question names a report id while the model only sees
+            # the alias. Rewrite the identifier in the prompt copy of the question
+            # (never user-facing) and say which reports are missing.
+            question = prompts.build_id_route_question(question, bundle.alias_map)
+            hint_extra = prompts.build_id_route_hint(
+                bundle.alias_map, state.get("missing_report_ids") or ()
+            )
 
         completion = self._answer_with_llm(
             bundle.text, question, mode, deadline=deadline, hint_extra=hint_extra
@@ -533,6 +607,11 @@ class RagPipeline:
         if truncated:
             state["incidents"]["answer_truncated"] = 1
             answer_text = trim_to_last_complete_unit(answer_text)
+
+        if prompts.is_not_found_refusal(answer_text):
+            # Fix pack H2: the model declared the information unavailable. That is
+            # a decisive outcome, so it is never retried as an uncited answer.
+            return self._declared_not_found(result, state, id_route)
 
         def resolve(raw_answer: str):
             citations = process_citations(
@@ -570,6 +649,8 @@ class RagPipeline:
             if truncated:
                 state["incidents"]["answer_truncated"] = 1
                 answer_text = trim_to_last_complete_unit(answer_text)
+            if prompts.is_not_found_refusal(answer_text):
+                return self._declared_not_found(result, state, id_route)
             citations, uncited = resolve(answer_text)
 
         for key, value in citations.incidents.items():
@@ -595,6 +676,11 @@ class RagPipeline:
         answer_text = guarded.text
         if truncated:
             answer_text = f"{answer_text}\n\n{prompts.TRUNCATION_NOTICE}"
+
+        coverage_line = self._coverage_line(state, bundle, chunks)
+        state["coverage"] = coverage_line
+        if coverage_line:
+            answer_text = f"{answer_text}{config.COVERAGE_BLOCK_SEPARATOR}{coverage_line}"
 
         source_block = build_source_block(
             citations.cited_report_ids, bundle.report_metadata

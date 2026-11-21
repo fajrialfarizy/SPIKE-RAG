@@ -139,7 +139,7 @@ def test_both_groups_are_represented_in_a_comparison():
     assert levels["RPT0009"] == "Finalis"
 
 
-def test_no_group_dominates_because_k_is_split():
+def test_no_group_dominates_because_each_group_is_capped_by_reports():
     matches = [match(f"RPT1{i:03d}", level="Juara 1") for i in range(8)] + [
         match("RPT2001", level="Finalis"),
         match("RPT2002", level="Finalis"),
@@ -150,9 +150,10 @@ def test_no_group_dominates_because_k_is_split():
         "perbandingan", QueryMode.CROSS_REPORT, {}, "achievement_group"
     )
 
+    limit = config.COMPARE_REPORTS_PER_GROUP
     counts = [group["count"] for group in groups]
-    assert counts == [6, 3]
-    assert len(chunks) == 9
+    assert counts == [limit, limit]
+    assert len(chunks) == 2 * limit
     assert max(counts) < len(matches)
 
 
@@ -234,8 +235,8 @@ def test_the_pipeline_passes_the_group_status_to_the_answer_model():
 
     answer_prompt = llm.calls[1]["user_prompt"]
     assert "Kelompok pembanding yang dipakai" in answer_prompt
-    assert "- juara: 1 potongan dokumen" in answer_prompt
-    assert "- belum juara: 1 potongan dokumen" in answer_prompt
+    assert "- juara: 1 laporan" in answer_prompt
+    assert "- belum juara: 1 laporan" in answer_prompt
 
 
 def test_an_empty_group_reaches_the_answer_prompt_as_a_limitation():

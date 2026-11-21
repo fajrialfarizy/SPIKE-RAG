@@ -93,12 +93,30 @@ MAX_REPORT_IDS_BYPASS = 3
 
 # Specific Query Retrieval Settings
 RETRIEVAL_SPECIFIC_K = 6
-RETRIEVAL_SPECIFIC_MAX_CHUNKS_PER_REPORT = 3
+# Fix pack H4b: two chunks per report (k stays 6) so a specific answer shows at
+# least three distinct reports when the collection offers them. Phase 4 sweeps
+# this value against the evaluation set.
+RETRIEVAL_SPECIFIC_MAX_CHUNKS_PER_REPORT = 2
 RETRIEVAL_CANDIDATE_MULTIPLIER = 3
 
 # Cross Report Query Retrieval Settings
 RETRIEVAL_CROSS_REPORT_K = 12
 RETRIEVAL_CROSS_REPORT_MAX_CHUNKS_PER_REPORT = 2
+
+# Comparison mode (fix pack H3): each group contributes distinct reports with
+# one chunk per report, so every listed team is a separate source.
+COMPARE_REPORTS_PER_GROUP = 3
+# A group keeps at least this many distinct reports while trimming, as long as
+# the group has that many to begin with.
+COMPARE_MIN_REPORTS_PER_GROUP = 2
+# One chunk per report: prefer the sections that carry learning and advice.
+COMPARE_PREFERRED_SECTIONS = ("evaluasi_tim", "saran_pengembangan")
+# Candidates fetched per group: enough to find the configured number of distinct
+# reports after the per-report cap and the similarity threshold.
+RETRIEVAL_COMPARE_CANDIDATE_MULTIPLIER = 6
+# Comparison answers need more context than a single-report answer, but not the
+# full 12-chunk cross_report budget.
+MAX_CONTEXT_TOKENS_COMPARE = 3200
 
 # Catalog Mode Settings
 RETRIEVAL_CATALOG_MAX_REPORTS = 50
@@ -303,9 +321,12 @@ LLM_MAX_CONCURRENT_CALLS = 2
 # account cannot afford ~2,000-token contexts. 2,500 tokens still fits about six
 # 350-450-token chunks.
 MAX_CONTEXT_TOKENS = 2500
+# Comparison mode has its own budget (fix pack H3); specific mode and the exact
+# report-id route keep MAX_CONTEXT_TOKENS.
 CONTEXT_TOKEN_ESTIMATOR_CHARS_PER_TOKEN = 2.5
-# Concise-answer target for the addendum (catalog mode excepted).
-ANSWER_TARGET_WORDS = 200
+# Concise-answer target for the addendum v1.3 (catalog mode excepted).
+ANSWER_TARGET_WORDS = 180
+ANSWER_MAX_BULLETS = 6
 
 # Analyzer (LLM call #1)
 ANALYZER_MAX_SEARCH_QUERY_CHARS = 300
@@ -440,6 +461,15 @@ CONTEXT_GROUP_OPEN_TEMPLATE = '<kelompok nama="{label}">'
 CONTEXT_GROUP_CLOSE_TAG = "</kelompok>"
 CONTEXT_GROUP_ATTRIBUTE_TEMPLATE = ' kelompok="{label}"'
 CONTEXT_DOCUMENT_SEPARATOR = "\n\n"
+# The coverage line the backend appends to comparison answers (fix pack H3b).
+COVERAGE_BLOCK_SEPARATOR = "\n\n"
+COVERAGE_PREFIX = "Ringkasan ini didasarkan pada "
+COVERAGE_GROUP_TEMPLATE = "{shown} dari {total} laporan {label}"
+COVERAGE_JOINER = " dan "
+COVERAGE_SUFFIX = "."
+COVERAGE_CROSS_TEMPLATE = (
+    "Ringkasan ini didasarkan pada {shown} dari {total} laporan yang sesuai."
+)
 CONTEXT_CATALOG_OPEN_TAG = "<daftar_laporan>"
 CONTEXT_CATALOG_CLOSE_TAG = "</daftar_laporan>"
 CONTEXT_CATALOG_LINE_TEMPLATE = (
@@ -475,6 +505,15 @@ SOURCE_BLOCK_LINE_TEMPLATE = (
     "{achievement_level})"
 )
 SOURCE_BLOCK_SEPARATOR = "\n\n"
+
+# A model answer that starts with the first sentence of NOT_FOUND_RESPONSE is a
+# not-found declaration, not an uncited answer (fix pack H2). The comparison uses
+# this many normalized characters, so a missing or slightly reworded second
+# sentence still matches. Matching ignores case, whitespace and Markdown markers.
+NOT_FOUND_ANSWER_PREFIX_CHARS = 40
+# Markdown markers are removed before comparison, so **bold** or a heading hash
+# cannot hide a model-declared refusal from the detector.
+PATTERN_NOT_FOUND_MARKDOWN = re.compile(r"[*_`#>~]+")
 
 # Real Groq limits for the account used by the supervisor (Groq console limits
 # page, read 2026-11-21). Cached prompt tokens do not count toward them

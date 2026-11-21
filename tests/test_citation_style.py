@@ -8,11 +8,11 @@ ALIASES = {"LAP1": "RPT0001", "LAP2": "RPT0002"}
 RETRIEVED = ["RPT0001", "RPT0002"]
 
 
-def test_the_addendum_is_version_1_2_and_states_the_placement_rules():
+def test_the_addendum_is_version_1_3_and_states_the_placement_rules():
     addendum = prompts.CITATION_FORMAT_ADDENDUM
 
-    assert prompts.ADDENDUM_VERSION == "1.2"
-    assert "(v1.2)" in addendum
+    assert prompts.ADDENDUM_VERSION == "1.3"
+    assert "(v1.3)" in addendum
     assert "akhir kalimat atau akhir poin" in addendum
     assert "Jangan menaruh sitasi di tengah kalimat" in addendum
     assert "Paling banyak dua sitasi dalam satu kalimat" in addendum
@@ -81,6 +81,9 @@ def test_the_analyzer_treats_an_unknown_domain_as_in_scope():
     assert '"in_scope": true' in example.splitlines()[1]
 
 
-def test_the_answer_target_is_two_hundred_words():
-    assert config.ANSWER_TARGET_WORDS == 200
-    assert "200 kata" in prompts.CITATION_FORMAT_ADDENDUM
+def test_the_answer_target_is_one_hundred_eighty_words_and_six_bullets():
+    assert config.ANSWER_TARGET_WORDS == 180
+    assert "180 kata" in prompts.CITATION_FORMAT_ADDENDUM
+    assert config.ANSWER_MAX_BULLETS == 6
+    assert "Paling banyak 6 poin" in prompts.CITATION_FORMAT_ADDENDUM
+    assert "Parafrase" in prompts.CITATION_FORMAT_ADDENDUM
