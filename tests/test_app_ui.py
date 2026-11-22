@@ -11,6 +11,7 @@ import pytest
 
 import app_texts as T
 import config
+from core import prompts
 from core.pipeline import AnswerStatus
 from streamlit.testing.v1 import AppTest
 
@@ -156,6 +157,37 @@ def test_a_long_queue_wait_is_shown_inside_the_processing_status(tmp_path, monke
     ]
     assert any("Sedang mengantre karena batas layanan" in value for value in rendered)
     assert pipeline.questions == ["Apa kendala tim?"]
+
+
+def test_a_rate_limited_answer_appends_the_rounded_retry_wait(tmp_path, monkeypatch):
+    pipeline = FakePipeline(
+        answer=prompts.RATE_LIMITED_RESPONSE,
+        status=AnswerStatus.RATE_LIMITED,
+        retry_after_seconds=12.0,
+    )
+    at, _ = start_app(tmp_path, runtime=make_runtime(tmp_path, pipeline), monkeypatch=monkeypatch)
+    login(at)
+
+    ask(at, "Apa kendala tim?")
+
+    content = at.session_state["chat_history"][-1]["content"]
+    assert content.startswith(prompts.RATE_LIMITED_RESPONSE)
+    assert "Silakan coba lagi dalam sekitar 15 detik." in content
+
+
+def test_a_rate_limited_answer_without_a_wait_is_left_unchanged(tmp_path, monkeypatch):
+    pipeline = FakePipeline(
+        answer=prompts.RATE_LIMITED_RESPONSE,
+        status=AnswerStatus.RATE_LIMITED,
+    )
+    at, _ = start_app(tmp_path, runtime=make_runtime(tmp_path, pipeline), monkeypatch=monkeypatch)
+    login(at)
+
+    ask(at, "Apa kendala tim?")
+
+    assert at.session_state["chat_history"][-1]["content"] == (
+        prompts.RATE_LIMITED_RESPONSE
+    )
 
 
 def test_the_session_daily_cap_blocks_the_next_question(tmp_path, monkeypatch):

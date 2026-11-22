@@ -51,10 +51,12 @@ def make_settings(tmp_path):
 
 
 class FakePipeline:
-    def __init__(self, answer="Jawaban uji [RPT0002].", status=AnswerStatus.ANSWERED, fail=None):
+    def __init__(self, answer="Jawaban uji [RPT0002].", status=AnswerStatus.ANSWERED,
+                 fail=None, retry_after_seconds=None):
         self.answer = answer
         self.status = status
         self.fail = fail
+        self.retry_after_seconds = retry_after_seconds
         self.questions = []
 
     def run(self, question):
@@ -66,6 +68,7 @@ class FakePipeline:
             answer=self.answer,
             cited_report_ids=["RPT0002"] if self.status is AnswerStatus.ANSWERED else [],
             debug=DebugInfo(mode="specific", route="semantic"),
+            retry_after_seconds=self.retry_after_seconds,
         )
 
 

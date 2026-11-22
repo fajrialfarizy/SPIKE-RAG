@@ -134,7 +134,12 @@ def test_catalog_lists_reports_without_embedding(persist_dir):
     assert len(result.debug.alias_map) == len(
         {report_id for report_id in result.debug.alias_map.values()}
     )
-    assert "<daftar_laporan>" in llm.calls[1]["user_prompt"]
+    # Fix pack G5: the catalog answer is rendered by the backend, so the analyzer
+    # is the only model call and no <daftar_laporan> context is ever sent. The old
+    # assertion here still expected a second call (caught in fix pack 7).
+    assert len(llm.calls) == 1
+    assert "<daftar_laporan>" not in llm.calls[0]["user_prompt"]
+    assert "RPT" in result.answer
 
 
 def test_injection_document_is_passed_as_data_only(persist_dir):

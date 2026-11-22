@@ -8,11 +8,16 @@ ALIASES = {"LAP1": "RPT0001", "LAP2": "RPT0002"}
 RETRIEVED = ["RPT0001", "RPT0002"]
 
 
-def test_the_addendum_is_version_1_3_and_states_the_placement_rules():
+def test_the_addendum_is_version_1_4_and_states_the_placement_rules():
     addendum = prompts.CITATION_FORMAT_ADDENDUM
 
-    assert prompts.ADDENDUM_VERSION == "1.3"
-    assert "(v1.3)" in addendum
+    assert prompts.ADDENDUM_VERSION == "1.4"
+    assert "(v1.4)" in addendum
+    # Fix pack 7 adds the per-report cap next to the six-bullet rule.
+    assert (
+        f"paling banyak {config.ANSWER_MAX_BULLETS_PER_REPORT} poin untuk setiap "
+        "laporan" in addendum
+    )
     assert "akhir kalimat atau akhir poin" in addendum
     assert "Jangan menaruh sitasi di tengah kalimat" in addendum
     assert "Paling banyak dua sitasi dalam satu kalimat" in addendum
