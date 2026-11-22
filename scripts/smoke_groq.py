@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import config
 from core.knowledge_base import KnowledgeBase, KnowledgeBaseError
 from core.llm_client import GroqLLMClient
-from core.pipeline import RagPipeline, configure_file_logging
+from core.pipeline import AnswerStatus, RagPipeline, configure_file_logging
 from core.rate_limiter import get_token_limiter
 from core.tokens import E5TokenCounter
 from core.warmup import WarmupError, warm_up_embedder, warm_up_knowledge_base
@@ -201,6 +201,14 @@ def print_calls(calls: Sequence[dict]) -> None:
             f"model_latency_ms={call.get('model_latency_ms', 'n/a')} "
             f"attempts={call.get('attempts')} tokens={_json(call.get('usage') or {})}"
         )
+        if call.get("error_type"):
+            # Fix pack 11 (S2b): a failed call reports the provider status and
+            # whether its token reservation was released or kept.
+            print(
+                f"    error_type={call.get('error_type')} "
+                f"http_status={call.get('http_status')} "
+                f"reservation_outcome={call.get('reservation_outcome')}"
+            )
         if call.get("reservation"):
             print(f"    limiter={_json(call['reservation'])}")
 
@@ -328,7 +336,12 @@ def main(argv: Optional[list] = None) -> int:
     contrast_truncated_total = 0
     generic_dimension_total = 0
     low_support_total = 0
+    cited_text_missing_total = 0
     reports_cited_total = 0
+    provider_400_total = 0
+    answered_questions = 0
+    failed_questions = 0
+    answered_tokens = 0
     structured_totals = {
         "dropped_points": 0,
         "point_uncited": 0,
@@ -340,6 +353,7 @@ def main(argv: Optional[list] = None) -> int:
     print(
         f"model={config.LLM_MODEL_NAME} answer_effort={args.answer_effort} "
         f"answer_format={config.ANSWER_FORMAT} "
+        f"contrast_mode={config.COMPARE_CONTRAST_MODE} "
         f"questions={len(scenarios)} delay={args.delay}s "
         f"token_budget={args.token_budget} daily_tokens={daily_limit}",
         flush=True,
@@ -381,6 +395,10 @@ def main(argv: Optional[list] = None) -> int:
             f"style={_json(result.debug.style)} "
             f"incidents={_json(result.debug.incidents)}"
         )
+        if result.debug.provider_error:
+            # Fix pack 11 (S1a): developer-only provider detail for a rejected
+            # request. Never user-facing, never written to the log file.
+            print(f"provider_error={_json(result.debug.provider_error)}")
         # Fix pack 9 (O4/O5): the structured-answer counters and the group key
         # mapping are printed for every question, so a real run is diagnosable.
         incidents = result.debug.incidents or {}
@@ -493,7 +511,21 @@ def main(argv: Optional[list] = None) -> int:
         low_support_total += int(
             (result.debug.support or {}).get("low_support_points") or 0
         )
+        cited_text_missing_total += int(
+            (result.debug.support or {}).get("cited_text_missing_points") or 0
+        )
         reports_cited_total += int(result.debug.reports_cited or 0)
+        provider_400_total += int(incidents.get("provider_400") or 0)
+        if result.status is AnswerStatus.ANSWERED:
+            answered_questions += 1
+            answered_tokens += question_tokens
+        else:
+            failed_questions += 1
+            print(
+                f"FAILED question {label}: status={result.status.value} "
+                f"error_type={result.debug.error_type}",
+                flush=True,
+            )
 
         print(
             f"cumulative_tokens={cumulative_tokens} "
@@ -527,20 +559,36 @@ def main(argv: Optional[list] = None) -> int:
 
     print_score_summary(top1_scores)
 
-    answered = max(1, len(scenarios))
-    average = cumulative_tokens / answered
-    capacity = get_token_limiter().capacity_estimate(average)
+    # Fix pack 11 (S4): the average and the capacity estimate describe the
+    # questions that were actually answered; the all-questions value is printed
+    # next to it, labelled, instead of being mixed into the average.
+    all_average = cumulative_tokens / max(1, len(scenarios))
+    answered_average = answered_tokens / max(1, answered_questions)
+    capacity = get_token_limiter().capacity_estimate(answered_average)
     print("\n=== token summary")
     print(f"questions_run={len(scenarios)}")
+    print(
+        f"questions_answered={answered_questions} "
+        f"questions_failed={failed_questions}"
+    )
     print(f"cumulative_tokens={cumulative_tokens}")
-    print(f"average_tokens_per_question={average:.0f}")
+    print(
+        f"average_tokens_per_question_answered={answered_average:.0f} "
+        f"(answered questions: {answered_questions})"
+    )
+    print(
+        f"average_tokens_per_question_all={all_average:.0f} "
+        f"(all questions, includes failures)"
+    )
     print(f"daily_limit={daily_limit}")
     print(f"percent_of_daily_limit={100.0 * cumulative_tokens / daily_limit:.1f}%")
     print(
-        "capacity_at_average: "
+        "capacity_at_answered_average: "
         f"{capacity['questions_per_minute']} questions/min, "
         f"{capacity['questions_per_day']} questions/day"
     )
+    print(f"provider_400_total={provider_400_total}")
+    print(f"cited_text_missing_total={cited_text_missing_total}")
     print(f"truncated_answers={truncated_answers}")
     print(f"dropped_bullets_total={dropped_bullets_total}")
     print(f"negation_sentences_total={negation_total}")
