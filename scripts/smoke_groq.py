@@ -56,6 +56,10 @@ SMOKE_SCENARIOS: List[Tuple[str, str]] = [
      "Apa saja saran pengembangan yang tercantum pada RPT0002?"),
     ("juara_vs_belum_juara",
      "Apa perbedaan pembelajaran dari tim yang memperoleh juara dan tim yang belum juara?"),
+    # Fix pack 8 (N6): a competition_type comparison, so the paired-contrast
+    # contract is exercised with two groups named after the types.
+    ("compare_by_type",
+     "Bandingkan kendala yang dialami tim business plan dan business case."),
     ("out_of_scope",
      "Siapa presiden Indonesia saat ini?"),
     ("privacy_nim",
@@ -272,9 +276,14 @@ def main(argv: Optional[list] = None) -> int:
         flush=True,
     )
 
+    # Fix pack 8 (N4): the provider client import/construction must not be charged
+    # to the first question; build it during warm-up and print the cost.
+    llm_client = GroqLLMClient()
+    print(f"llm client warm-up: {llm_client.warm_up()} ms", flush=True)
+
     pipeline = RagPipeline(
         knowledge_base=knowledge_base,
-        llm=GroqLLMClient(),
+        llm=llm_client,
         embedder=embedder,
         token_counter=token_counter,
         answer_reasoning_effort=args.answer_effort,
@@ -289,6 +298,9 @@ def main(argv: Optional[list] = None) -> int:
     truncated_answers = 0
     dropped_bullets_total = 0
     negation_total = 0
+    causal_total = 0
+    contrast_invalid_total = 0
+    contrast_truncated_total = 0
     style_totals = {"mid_sentence_citations": 0, "unbalanced_parentheses": 0}
     print(
         f"model={config.LLM_MODEL_NAME} answer_effort={args.answer_effort} "
@@ -317,6 +329,7 @@ def main(argv: Optional[list] = None) -> int:
         print(f"compare_by={result.debug.compare_by} groups={_json(result.debug.groups)}")
         print(
             f"phases={_json(result.debug.phases)} "
+            f"post_phases={_json(result.debug.post_phases)} "
             f"deadline_remaining_s={result.debug.deadline_remaining_seconds} "
             f"retry_after_s={result.debug.retry_after_seconds} "
             f"dropped_bullets={result.debug.dropped_bullets}",
@@ -333,11 +346,25 @@ def main(argv: Optional[list] = None) -> int:
             f"incidents={_json(result.debug.incidents)}"
         )
         negation = result.debug.negation or {}
-        print(f"negation_sentences={negation.get('count', 0)}")
+        causal = result.debug.causal or {}
+        print(
+            f"negation_sentences={negation.get('count', 0)} "
+            f"causal_connectors={causal.get('count', 0)}"
+        )
+        if result.debug.compare_by:
+            print(
+                "contrast_incidents="
+                f"contrast_invalid={(result.debug.incidents or {}).get('contrast_invalid', 0)} "
+                f"contrast_truncated={(result.debug.incidents or {}).get('contrast_truncated', 0)}"
+            )
         if args.show_raw and negation.get("samples"):
             # Debug-only evidence; never logged and never user-facing.
             print("negation_samples:")
             for sample in negation["samples"]:
+                print(f"  - {sample}")
+        if args.show_raw and causal.get("samples"):
+            print("causal_samples:")
+            for sample in causal["samples"]:
                 print(f"  - {sample}")
         if result.debug.coverage:
             print(f"coverage: {result.debug.coverage}")
@@ -373,6 +400,10 @@ def main(argv: Optional[list] = None) -> int:
         )
         dropped_bullets_total += int(result.debug.dropped_bullets or 0)
         negation_total += int(negation.get("count") or 0)
+        causal_total += int(causal.get("count") or 0)
+        incidents = result.debug.incidents or {}
+        contrast_invalid_total += int(incidents.get("contrast_invalid") or 0)
+        contrast_truncated_total += int(incidents.get("contrast_truncated") or 0)
         for key in style_totals:
             style_totals[key] += int((result.debug.style or {}).get(key) or 0)
 
@@ -425,6 +456,9 @@ def main(argv: Optional[list] = None) -> int:
     print(f"truncated_answers={truncated_answers}")
     print(f"dropped_bullets_total={dropped_bullets_total}")
     print(f"negation_sentences_total={negation_total}")
+    print(f"causal_connectors_total={causal_total}")
+    print(f"contrast_invalid_total={contrast_invalid_total}")
+    print(f"contrast_truncated_total={contrast_truncated_total}")
     print(f"style_totals={_json(style_totals)}")
     print(
         f"cached_tokens={cached_tokens}"

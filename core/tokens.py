@@ -51,7 +51,16 @@ class EstimatorTokenCounter:
 
 
 class E5TokenCounter:
-    """Exact token count with the tokenizer of intfloat/multilingual-e5-small."""
+    """
+    Exact token count with the tokenizer of intfloat/multilingual-e5-small.
+
+    Counting is encode-only: the result is a number, never a model input. The e5
+    sentence encoder enforces a 512-token limit, but a prompt to count can be
+    longer, and transformers warns "Token indices sequence length is longer than
+    the specified maximum sequence length" on every such encode (fix pack 8,
+    N5a). The counting instance therefore raises ``model_max_length`` and never
+    truncates, so the log stays clean and the count stays exact.
+    """
 
     def __init__(
         self,
@@ -82,6 +91,8 @@ class E5TokenCounter:
                     raise TokenCounterError(
                         f"Could not load the tokenizer for '{self.model_name}'."
                     ) from exc
+                # Counting-only instance: no truncation, no 512-token warning.
+                cached.model_max_length = config.TOKEN_COUNT_MAX_LENGTH
                 _TOKENIZER_CACHE[self.model_name] = cached
         self._tokenizer = cached
         return self._tokenizer
@@ -89,4 +100,8 @@ class E5TokenCounter:
     def count_tokens(self, text: str) -> int:
         with self._lock:
             tokenizer = self._ensure_tokenizer()
-            return len(tokenizer.encode(text or "", add_special_tokens=False))
+            return len(
+                tokenizer.encode(
+                    text or "", add_special_tokens=False, truncation=False
+                )
+            )

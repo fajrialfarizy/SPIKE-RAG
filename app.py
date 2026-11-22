@@ -154,9 +154,16 @@ def build_runtime(settings: Settings) -> AppRuntime:
         (time.perf_counter() - token_started) * 1000.0,
     )
 
+    # Fix pack 8 (N4): the Groq client import and construction cost seconds and
+    # used to happen inside the first question's (untimed) post-processing. Build
+    # it here, during startup, like the embedder and the tokenizer.
+    llm_client = GroqLLMClient(api_key=settings.groq.api_key)
+    llm_warmup_ms = llm_client.warm_up()
+    logger.info("llm_client_warmup_ms=%.1f", llm_warmup_ms)
+
     pipeline = RagPipeline(
         knowledge_base=version.handle,
-        llm=GroqLLMClient(api_key=settings.groq.api_key),
+        llm=llm_client,
         embedder=embedder,
         token_counter=token_counter,
     )

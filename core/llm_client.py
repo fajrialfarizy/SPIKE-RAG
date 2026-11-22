@@ -329,6 +329,19 @@ class GroqLLMClient(LLMClient):
             max_retries=0,
         )
 
+    def warm_up(self) -> float:
+        """
+        Create the provider client before the first question (fix pack 8, N4).
+
+        ``from groq import Groq`` plus the HTTP client construction costs seconds
+        on a cold process, and it happened inside ``complete`` after the call clock
+        started, so it landed in the pipeline's post_ms on the first question and
+        in no call metric at all. Startup calls this once and logs the duration.
+        """
+        started = time.perf_counter()
+        self._ensure_client()
+        return round((time.perf_counter() - started) * 1000.0, 1)
+
     @property
     def limiter(self) -> LLMConcurrencyLimiter:
         if self._limiter is None:
