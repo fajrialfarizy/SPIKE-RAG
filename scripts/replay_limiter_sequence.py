@@ -207,7 +207,7 @@ def compare_payload(alias_map: Dict[str, str]) -> str:
                 ],
             },
         ],
-        "differences": [],
+        "contrasts": [],
     })
 
 
