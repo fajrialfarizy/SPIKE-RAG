@@ -111,7 +111,12 @@ def test_the_schema_is_strict_and_keyed_by_group():
     pick = contrast_item["properties"]["pick"]
     assert pick["additionalProperties"] is False
     assert pick["required"] == ["g1", "g2"]
-    assert pick["properties"]["g1"] == {"type": "integer"}
+    # Fix pack 11 (S1d): the pick is a string with an enum generated per request,
+    # the documented construct the real model already accepted.
+    assert pick["properties"]["g1"]["type"] == "string"
+    assert pick["properties"]["g1"]["enum"] == [
+        str(number) for number in range(1, config.COMPARE_POINTS_PER_GROUP_MAX + 1)
+    ]
     # Fix pack 9: groups is a keyed object with every key required, so the model
     # never writes a group name and no group can be missing.
     group_object = schema["properties"]["groups"]

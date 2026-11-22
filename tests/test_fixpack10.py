@@ -247,7 +247,8 @@ def test_the_contrast_schema_picks_a_number_per_group():
     pick = contrast["properties"]["pick"]
     assert pick["required"] == ["g1", "g2"]
     assert pick["additionalProperties"] is False
-    assert pick["properties"]["g2"] == {"type": "integer"}
+    assert pick["properties"]["g2"]["type"] == "string"
+    assert pick["properties"]["g2"]["enum"] == ["1", "2", "3"]
     assert "sides" not in contrast["properties"]
 
 
