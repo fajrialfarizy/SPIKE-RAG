@@ -319,8 +319,8 @@ def test_the_text_path_is_still_selectable_by_config(monkeypatch):
 def test_the_structured_addendum_is_versioned_and_keeps_the_prd_core():
     addendum = prompts.STRUCTURED_FORMAT_ADDENDUM
 
-    assert prompts.STRUCTURED_ADDENDUM_VERSION == "3.0"
-    assert "(v3.0)" in addendum
+    assert prompts.STRUCTURED_ADDENDUM_VERSION == "3.1"
+    assert "(v3.1)" in addendum
     assert "SATU fakta" in addendum
     assert "kecuali kalimat sumber yang sama menyatakan hubungan itu" in addendum
     assert prompts.PRD_9_1_SYSTEM_PROMPT in prompts.SYSTEM_PROMPT_STRUCTURED
@@ -373,26 +373,12 @@ def test_a_point_over_the_group_citation_ceiling_is_dropped_not_cut():
     assert validation.incidents["cite_over_limit_dropped"] == 1
 
 
-def test_a_side_with_three_aliases_is_kept():
-    # The real run's finalist side cited LAP4, LAP5, LAP6 and the backend cut it
-    # to two. Three are now allowed on a contrast side.
+def test_a_picked_point_renders_its_validated_citations():
     validation = _validate(
         _compare_payload(
             [{"text": "Poin juara.", "cite": ["LAP1"]}],
-            [{"text": "Poin finalis.", "cite": ["LAP2"]}],
-            [
-                {
-                    "dimension": "kesiapan data",
-                    "sides": [
-                        {"group": "g1", "text": "Data primer.", "cite": ["LAP1"]},
-                        {
-                            "group": "g2",
-                            "text": "Data sekunder.",
-                            "cite": ["LAP2", "LAP3"],
-                        },
-                    ],
-                }
-            ],
+            [{"text": "Poin finalis.", "cite": ["LAP2", "LAP3"]}],
+            [{"dimension": "kesiapan data", "pick": {"g1": 1, "g2": 1}}],
         )
     )
 
@@ -400,51 +386,35 @@ def test_a_side_with_three_aliases_is_kept():
     assert validation.contrasts[0].sides[1].report_ids == ["RPT0002", "RPT0003"]
 
 
-def test_a_side_over_three_aliases_is_dropped_not_cut():
+def test_a_pick_on_a_dropped_point_drops_the_contrast():
     validation = _validate(
         _compare_payload(
             [{"text": "Poin juara.", "cite": ["LAP1"]}],
-            [{"text": "Poin finalis.", "cite": ["LAP2"]}],
-            [
-                {
-                    "dimension": "kesiapan data",
-                    "sides": [
-                        {"group": "g1", "text": "Data primer.", "cite": ["LAP1"]},
-                        {
-                            "group": "g2",
-                            "text": "Data sekunder.",
-                            "cite": ["LAP2", "LAP3", "LAP4", "LAP5"],
-                        },
-                    ],
-                }
-            ],
+            [{"text": "Poin finalis.", "cite": ["LAP2", "LAP3", "LAP4"]}],
+            [{"dimension": "kesiapan data", "pick": {"g1": 1, "g2": 1}}],
         )
     )
 
+    assert validation.sections[1].points == []
     assert validation.contrasts == []
     assert validation.incidents["cite_over_limit_dropped"] == 1
+    assert validation.incidents["contrast_invalid_pick_dropped"] == 1
 
 
 @pytest.mark.parametrize("dimension", ["Pembelajaran", "kendala", "ASPEK"])
-def test_a_generic_dimension_is_rejected(dimension):
+def test_a_generic_dimension_is_rendered_with_the_neutral_label(dimension):
     validation = _validate(
         _compare_payload(
             [{"text": "Poin juara.", "cite": ["LAP1"]}],
             [{"text": "Poin finalis.", "cite": ["LAP2"]}],
-            [
-                {
-                    "dimension": dimension,
-                    "sides": [
-                        {"group": "g1", "text": "A.", "cite": ["LAP1"]},
-                        {"group": "g2", "text": "B.", "cite": ["LAP2"]},
-                    ],
-                }
-            ],
+            [{"dimension": dimension, "pick": {"g1": 1, "g2": 1}}],
         )
     )
 
-    assert validation.contrasts == []
-    assert validation.incidents["contrast_invalid"] == 1
+    assert len(validation.contrasts) == 1
+    assert validation.contrasts[0].dimension == config.COMPARE_NEUTRAL_DIMENSION
+    assert validation.incidents["generic_dimension"] == 1
+    assert "contrast_invalid" not in validation.incidents
 
 
 def test_a_concrete_dimension_is_accepted():
@@ -452,19 +422,12 @@ def test_a_concrete_dimension_is_accepted():
         _compare_payload(
             [{"text": "Poin juara.", "cite": ["LAP1"]}],
             [{"text": "Poin finalis.", "cite": ["LAP2"]}],
-            [
-                {
-                    "dimension": "Persiapan presentasi",
-                    "sides": [
-                        {"group": "g1", "text": "A.", "cite": ["LAP1"]},
-                        {"group": "g2", "text": "B.", "cite": ["LAP2"]},
-                    ],
-                }
-            ],
+            [{"dimension": "Persiapan presentasi", "pick": {"g1": 1, "g2": 1}}],
         )
     )
 
     assert len(validation.contrasts) == 1
+    assert validation.incidents == {}
 
 
 def test_the_keyed_schema_requires_every_group_key():

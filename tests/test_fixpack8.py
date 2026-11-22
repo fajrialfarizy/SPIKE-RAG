@@ -42,24 +42,26 @@ FINALIST_HEADING = "Tim belum juara (finalis)"
 
 
 # -- N1: paired contrasts --------------------------------------------------
-def _side(group, text, reports):
-    """One contrast side addressed by its model-facing group key."""
-    return {"group": group, "text": text, "cite": reports}
+# Fix pack 10 (R2b): a contrast picks the 1-based number of one point per group
+# as the model wrote those points; it carries no text of its own.
+def _points(text):
+    return [{"text": text, "cite": ["LAP1"]}]
 
 
-def _contrast(dimension, award_text="Wawancara pengguna.", finalist_text="Data teknis."):
+def _contrast(dimension):
+    return {"dimension": dimension, "pick": {"g1": 1, "g2": 1}}
+
+
+def _validation_payload(contrasts, *, award_text="Wawancara pengguna.", finalist_text="Data teknis."):
     return {
-        "dimension": dimension,
-        "sides": [
-            _side("g1", award_text, ["LAP1"]),
-            _side("g2", finalist_text, ["LAP2"]),
-        ],
-    }
-
-
-def _validation_payload(contrasts):
-    return {
-        "groups": {"g1": [], "g2": []},
+        "groups": {
+            "g1": [
+                {"text": award_text, "cite": ["LAP1"]},
+            ],
+            "g2": [
+                {"text": finalist_text, "cite": ["LAP2"]},
+            ],
+        },
         "contrasts": contrasts,
     }
 
@@ -86,7 +88,8 @@ def test_the_schema_has_paired_contrasts_instead_of_differences():
     assert set(schema["required"]) == {"groups", "contrasts"}
     assert "differences" not in schema["properties"]
     contrast = schema["properties"]["contrasts"]["items"]
-    assert set(contrast["required"]) == {"dimension", "sides"}
+    assert set(contrast["required"]) == {"dimension", "pick"}
+    assert contrast["properties"]["pick"]["required"] == ["g1", "g2"]
 
 
 def test_a_valid_contrast_keeps_one_side_per_group():
@@ -99,55 +102,55 @@ def test_a_valid_contrast_keeps_one_side_per_group():
     assert validation.incidents == {}
 
 
-def test_a_side_citing_the_other_groups_alias_is_cleaned():
-    contrast = _contrast("kedalaman validasi")
-    contrast["sides"][0]["cite"] = ["LAP1", "LAP2"]
+def test_a_point_citing_the_other_groups_alias_is_cleaned():
+    payload = _validation_payload([_contrast("kedalaman validasi")])
+    payload["groups"]["g1"][0]["cite"] = ["LAP1", "LAP2"]
 
-    validation = _validate(_validation_payload([contrast]))
+    validation = _validate(payload)
 
     assert validation.contrasts[0].sides[0].report_ids == ["RPT0001"]
     assert validation.incidents["cross_group_citation"] == 1
 
 
-def test_a_side_left_without_its_own_group_is_dropped_with_the_contrast():
-    contrast = _contrast("kedalaman validasi")
-    contrast["sides"][0]["cite"] = ["LAP2"]
+def test_a_point_left_without_its_own_group_takes_the_contrast_with_it():
+    payload = _validation_payload([_contrast("kedalaman validasi")])
+    payload["groups"]["g1"][0]["cite"] = ["LAP2"]
 
-    validation = _validate(_validation_payload([contrast]))
+    validation = _validate(payload)
 
     assert validation.contrasts == []
     assert validation.incidents["cross_group_citation"] == 1
-    assert validation.incidents["contrast_invalid"] == 1
+    assert validation.incidents["contrast_invalid_pick_dropped"] == 1
 
 
-def test_a_contrast_missing_one_side_is_dropped():
+def test_a_contrast_missing_one_group_pick_is_dropped():
     contrast = _contrast("kedalaman validasi")
-    contrast["sides"] = contrast["sides"][:1]
+    contrast["pick"] = {"g1": 1}
 
     validation = _validate(_validation_payload([contrast]))
 
     assert validation.contrasts == []
-    assert validation.incidents["contrast_invalid"] == 1
+    assert validation.incidents["contrast_invalid_pick_missing"] == 1
 
 
-def test_a_contrast_with_a_duplicate_label_is_dropped():
+def test_a_pick_outside_the_group_points_is_dropped():
     contrast = _contrast("kedalaman validasi")
-    contrast["sides"].append(_side("g1", "Poin kedua.", ["LAP1"]))
+    contrast["pick"]["g2"] = 2
 
     validation = _validate(_validation_payload([contrast]))
 
     assert validation.contrasts == []
-    assert validation.incidents["contrast_invalid"] == 1
+    assert validation.incidents["contrast_invalid_pick_range"] == 1
 
 
-def test_an_unknown_side_key_is_dropped():
+def test_an_unknown_pick_key_is_dropped():
     contrast = _contrast("kedalaman validasi")
-    contrast["sides"][1]["group"] = "g9"
+    contrast["pick"]["g9"] = 1
 
     validation = _validate(_validation_payload([contrast]))
 
     assert validation.contrasts == []
-    assert validation.incidents["contrast_invalid"] == 1
+    assert validation.incidents["contrast_invalid_pick_unknown"] == 1
 
 
 def test_seven_contrasts_are_truncated_to_two_not_failed():
@@ -308,13 +311,7 @@ def test_a_competition_type_comparison_uses_the_two_type_labels():
             "g2": [{"text": "Data sekunder dominan.", "cite": ["LAP2"]}],
         },
         "contrasts": [
-            {
-                "dimension": "kesiapan data",
-                "sides": [
-                    _side("g1", "Data primer terbatas.", ["LAP1"]),
-                    _side("g2", "Data sekunder dominan.", ["LAP2"]),
-                ],
-            }
+            {"dimension": "kesiapan data", "pick": {"g1": 1, "g2": 1}}
         ],
     }
     pipeline, llm = _type_pipeline(payload)
@@ -329,12 +326,12 @@ def test_a_competition_type_comparison_uses_the_two_type_labels():
     assert "**Business Case**" in lines
     assert "  - Business Case: Data sekunder dominan. [RPT3002]" in lines
     call = [item for item in llm.calls if item.get("response_format")][0]
-    enum = call["response_format"]["json_schema"]["schema"]["properties"]["contrasts"][
+    pick = call["response_format"]["json_schema"]["schema"]["properties"]["contrasts"][
         "items"
-    ]["properties"]["sides"]["items"]["properties"]["group"]["enum"]
-    # Fix pack 9: the schema carries keys for the two groups that have documents
-    # (Business Plan, Business Case), never the empty configured types.
-    assert enum == ["g1", "g2"]
+    ]["properties"]["pick"]
+    # Fix pack 9/10: the schema carries keys for the two groups that have
+    # documents (Business Plan, Business Case), never the empty configured types.
+    assert pick["required"] == ["g1", "g2"]
     keys = call["response_format"]["json_schema"]["schema"]["properties"]["groups"][
         "required"
     ]
@@ -356,8 +353,8 @@ def test_the_free_text_addendum_carries_the_fidelity_rules():
 def test_the_compare_addendum_carries_the_fidelity_rules():
     addendum = prompts.COMPARE_CITATION_ADDENDUM
 
-    assert prompts.COMPARE_ADDENDUM_VERSION == "2.3"
-    assert '"komunikasi terkendala" bukan "kurangnya kolaborasi"' in addendum
+    assert prompts.COMPARE_ADDENDUM_VERSION == "2.4"
+    assert '"kurang menggali" bukan "mengabaikan"' in addendum
     assert "Jangan menyambung dua fakta" in addendum
 
 

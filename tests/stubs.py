@@ -14,11 +14,15 @@ from core.llm_client import LLMClient, LLMResponseError, LLMResult, TokenUsage
 
 def keyed_compare_payload(groups, contrasts=None):
     """
-    Test helper: turn label-keyed comparison groups into fix pack 9's shape.
+    Test helper: turn label-keyed comparison groups into the wire payload.
 
     The model returns g1, g2, ... and the backend maps them to labels, so a test
     describes labels and this helper produces the wire payload. Keys follow the
     order of the groups given, which is the config order in every fixture.
+
+    Fix pack 10 (R2b): a contrast carries a ``pick`` of {label: 1-based point
+    number} instead of its own text. A contrast without a pick is a test bug and
+    fails loudly here, so no fixture keeps the removed side shape.
     """
     keys = {}
     keyed = {}
@@ -29,17 +33,16 @@ def keyed_compare_payload(groups, contrasts=None):
 
     converted = []
     for contrast in contrasts or []:
+        pick = contrast.get("pick")
+        if not isinstance(pick, dict):
+            raise ValueError(
+                "keyed_compare_payload: a contrast needs a 'pick' dict of "
+                "{label: 1-based point number}; contrast sides are gone."
+            )
         converted.append(
             {
                 "dimension": contrast["dimension"],
-                "sides": [
-                    {
-                        "group": keys[side["label"]],
-                        "text": side["text"],
-                        "cite": side["cite"],
-                    }
-                    for side in contrast["sides"]
-                ],
+                "pick": {keys[label]: number for label, number in pick.items()},
             }
         )
     return {"groups": keyed, "contrasts": converted}

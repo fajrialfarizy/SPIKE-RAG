@@ -103,13 +103,11 @@ def payload(groups, contrasts=None):
     )
 
 
-def contrast(dimension, award_text, finalist_text, award_cite="LAP1", finalist_cite="LAP4"):
+def contrast(dimension, award_pick=1, finalist_pick=1):
+    """Fix pack 10 (R2b): a contrast picks one numbered point per group."""
     return {
         "dimension": dimension,
-        "sides": [
-            {"label": AWARD_LABEL, "text": award_text, "cite": [award_cite]},
-            {"label": FINALIST_LABEL, "text": finalist_text, "cite": [finalist_cite]},
-        ],
+        "pick": {AWARD_LABEL: award_pick, FINALIST_LABEL: finalist_pick},
     }
 
 
@@ -177,20 +175,16 @@ def test_the_heading_is_a_bold_display_label_on_its_own_line():
 def test_the_addendum_tells_the_model_not_to_restate_the_group():
     addendum = prompts.COMPARE_CITATION_ADDENDUM
 
-    assert prompts.COMPARE_ADDENDUM_VERSION == "2.3"
-    assert "(v2.3)" in addendum
+    assert prompts.COMPARE_ADDENDUM_VERSION == "2.4"
+    assert "(v2.4)" in addendum
     assert 'Jangan memulai poin dengan "Tim juara"' in addendum
-    assert "berbeda pada dimensi yang SAMA" not in addendum
-    assert "dimensi yang SAMA" in addendum
+    assert "poin yang benar-benar sebanding" in addendum
 
 
 # -- L3: a contrast pairs one supported side with each group -----------------
 def test_a_paired_contrast_is_rendered_with_nested_sides():
     pipeline, _ = comparison_pipeline(
-        payload(
-            groups_payload(),
-            [contrast("kedalaman validasi pasar", "Wawancara pengguna.", "Data teknis.")],
-        )
+        payload(groups_payload(), [contrast("kedalaman validasi pasar")])
     )
 
     result = pipeline.run(QUESTION)
@@ -198,8 +192,10 @@ def test_a_paired_contrast_is_rendered_with_nested_sides():
     lines = result.answer.splitlines()
     assert "**Perbedaan utama**" in lines
     assert "- kedalaman validasi pasar" in lines
-    assert f"  - {AWARD_HEADING}: Wawancara pengguna. [RPT1001]" in lines
-    assert f"  - {FINALIST_HEADING}: Data teknis. [RPT2001]" in lines
+    # Fix pack 10: the side is the validated group point, so the contrast never
+    # restates it in different words.
+    assert f"  - {AWARD_HEADING}: Validasi masalah lewat wawancara. [RPT1001]" in lines
+    assert f"  - {FINALIST_HEADING}: Riset rantai pasok menjadi kendala. [RPT2001]" in lines
     assert result.debug.negation["count"] == 0
 
 
@@ -210,9 +206,7 @@ def test_a_contrast_without_one_side_is_dropped_and_counted():
             [
                 {
                     "dimension": "kedalaman validasi pasar",
-                    "sides": [
-                        {"label": AWARD_LABEL, "text": "Wawancara.", "cite": ["LAP1"]}
-                    ],
+                    "pick": {AWARD_LABEL: 1},
                 }
             ],
         )
@@ -225,27 +219,16 @@ def test_a_contrast_without_one_side_is_dropped_and_counted():
     assert result.debug.incidents["contrast_invalid"] == 1
 
 
-def test_a_contrast_with_a_duplicate_side_is_dropped_and_counted():
+def test_a_pick_that_points_nowhere_is_dropped_and_counted():
     pipeline, _ = comparison_pipeline(
-        payload(
-            groups_payload(),
-            [
-                {
-                    "dimension": "kedalaman validasi pasar",
-                    "sides": [
-                        {"label": AWARD_LABEL, "text": "Satu.", "cite": ["LAP1"]},
-                        {"label": AWARD_LABEL, "text": "Dua.", "cite": ["LAP2"]},
-                        {"label": FINALIST_LABEL, "text": "Tiga.", "cite": ["LAP4"]},
-                    ],
-                }
-            ],
-        )
+        payload(groups_payload(), [contrast("kedalaman validasi pasar", 3, 1)])
     )
 
     result = pipeline.run(QUESTION)
 
     assert "kedalaman validasi pasar" not in result.answer
     assert result.debug.incidents["contrast_invalid"] == 1
+    assert result.debug.incidents["contrast_invalid_pick_range"] == 1
 
 
 def test_the_compare_addendum_limits_contrasts_to_two():
@@ -254,7 +237,7 @@ def test_the_compare_addendum_limits_contrasts_to_two():
     addendum = prompts.COMPARE_CITATION_ADDENDUM
     assert "paling banyak 3 poin per kelompok, 2 contrasts" in addendum
     assert "dimensi paling banyak 6 kata" in addendum
-    assert "teks setiap sisi paling banyak 35 kata" in addendum
+    assert "teks setiap sisi" not in addendum
 
 
 # -- L4: negation metric ---------------------------------------------------

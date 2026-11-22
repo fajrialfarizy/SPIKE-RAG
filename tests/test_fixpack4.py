@@ -105,11 +105,13 @@ def test_the_schema_is_strict_and_keyed_by_group():
     assert set(schema["required"]) == {"groups", "contrasts"}
     contrast_item = schema["properties"]["contrasts"]["items"]
     assert contrast_item["additionalProperties"] is False
-    assert set(contrast_item["required"]) == {"dimension", "sides"}
-    side_item = contrast_item["properties"]["sides"]["items"]
-    assert side_item["additionalProperties"] is False
-    assert set(side_item["required"]) == {"group", "text", "cite"}
-    assert side_item["properties"]["group"]["enum"] == ["g1", "g2"]
+    # Fix pack 10 (R2b): a contrast picks a numbered point per group and never
+    # carries text of its own.
+    assert set(contrast_item["required"]) == {"dimension", "pick"}
+    pick = contrast_item["properties"]["pick"]
+    assert pick["additionalProperties"] is False
+    assert pick["required"] == ["g1", "g2"]
+    assert pick["properties"]["g1"] == {"type": "integer"}
     # Fix pack 9: groups is a keyed object with every key required, so the model
     # never writes a group name and no group can be missing.
     group_object = schema["properties"]["groups"]
@@ -166,18 +168,10 @@ def test_a_valid_payload_is_rendered_by_the_backend_with_citations_at_the_end():
             [
                 {
                     "dimension": "validasi lapangan",
-                    "sides": [
-                        {
-                            "label": "meraih penghargaan",
-                            "text": "Memvalidasi masalah lewat wawancara.",
-                            "cite": ["LAP1"],
-                        },
-                        {
-                            "label": "belum juara (finalis)",
-                            "text": "Mengandalkan data teknis.",
-                            "cite": ["LAP4"],
-                        },
-                    ],
+                    "pick": {
+                        "meraih penghargaan": 1,
+                        "belum juara (finalis)": 1,
+                    },
                 }
             ],
         )
@@ -191,8 +185,9 @@ def test_a_valid_payload_is_rendered_by_the_backend_with_citations_at_the_end():
     assert "**Tim belum juara (finalis)**" in lines
     assert "**Perbedaan utama**" in lines
     assert "- validasi lapangan" in lines
+    # The side reuses the validated group point, not a separate contrast text.
     side = next(line for line in lines if line.startswith("  - Tim belum juara"))
-    assert side.endswith("[RPT2001]")
+    assert side == "  - Tim belum juara (finalis): Tim finalis mengandalkan data teknis. [RPT2001]"
     bullet = next(line for line in lines if line.startswith("- Tim juara memvalidasi"))
     assert bullet.endswith("[RPT1001]")
     assert result.cited_report_ids == ["RPT1001", "RPT2001"]
