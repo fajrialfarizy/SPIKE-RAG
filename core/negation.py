@@ -62,10 +62,20 @@ def _is_label_only(line: str) -> bool:
 
 
 def _is_backend_line(line: str) -> bool:
-    """True for the coverage sentence and for Sumber block lines."""
+    """
+    True for a line the backend wrote, never the model.
+
+    Fix pack 9 (O4): every configured backend phrase is skipped, so the
+    empty-group sentence is not counted as a model negation the way it was in
+    the real run.
+    """
     stripped = line.strip()
-    return stripped.startswith(config.NEGATION_SKIP_LINE_PREFIXES) or bool(
-        config.PATTERN_NEGATION_SOURCE_ROW.match(stripped)
+    if stripped.startswith(config.NEGATION_SKIP_LINE_PREFIXES):
+        return True
+    if config.PATTERN_NEGATION_SOURCE_ROW.match(stripped):
+        return True
+    return any(
+        stripped.startswith(phrase) for phrase in config.NEGATION_BACKEND_PHRASES
     )
 
 

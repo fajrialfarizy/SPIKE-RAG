@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import config
-from core import compare_answer, prompts
+from core import compare_answer, prompts, structured_answer
 from core.analyzer import Analyzer
 from core.answer_trimmer import trim_bullets
 from core.causal import causal_connectors
@@ -49,7 +49,7 @@ from core.guardrails import (
     detect_instruction_override,
     detect_privacy_request,
 )
-from core.llm_client import LLMClient, LLMRateLimitError
+from core.llm_client import LLMClient, LLMError, LLMRateLimitError
 from core.negation import negation_sentences, point_negation_counts
 from core.tokens import EstimatorTokenCounter
 from core.retriever import Retriever, RetrievedChunk
@@ -120,6 +120,12 @@ class DebugInfo:
     retry_after_seconds: Optional[float] = None
     # Bullets dropped by the backend trim (fix pack 7, M4b).
     dropped_bullets: int = 0
+    # Fix pack 9: points dropped by the structured caps (per-report and total).
+    dropped_points: int = 0
+    # Fix pack 9 (O2f): distinct reports cited per comparison group.
+    reports_cited_per_group: Dict[str, int] = field(default_factory=dict)
+    # Fix pack 9 (O2b): model-facing group key -> configured label.
+    group_keys: Dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -154,6 +160,9 @@ class DebugInfo:
             "deadline_remaining_seconds": self.deadline_remaining_seconds,
             "retry_after_seconds": self.retry_after_seconds,
             "dropped_bullets": self.dropped_bullets,
+            "dropped_points": self.dropped_points,
+            "reports_cited_per_group": self.reports_cited_per_group,
+            "group_keys": self.group_keys,
         }
 
 
@@ -217,6 +226,13 @@ class RagPipeline:
         self.token_counter = token_counter or EstimatorTokenCounter()
         self.max_context_tokens = int(max_context_tokens)
         self.answer_reasoning_effort = answer_reasoning_effort
+        # Fix pack 9: the answer format is a configuration choice, never a
+        # runtime fallback; an unknown value fails at construction.
+        if config.ANSWER_FORMAT not in config.ANSWER_FORMAT_VALUES:
+            raise ValueError(
+                f"ANSWER_FORMAT '{config.ANSWER_FORMAT}' is not supported; "
+                f"use one of {config.ANSWER_FORMAT_VALUES}."
+            )
 
     # -- helpers -----------------------------------------------------------
     @staticmethod
@@ -328,6 +344,9 @@ class RagPipeline:
             "causal": {},
             "context_tokens_saved": 0,
             "dropped_bullets": 0,
+            "dropped_points": 0,
+            "reports_cited_per_group": {},
+            "group_keys": {},
             "post_phases": {},
         }
 
@@ -394,6 +413,9 @@ class RagPipeline:
                 deadline_remaining_seconds=round(deadline.remaining(), 1),
                 retry_after_seconds=retry_after_seconds,
                 dropped_bullets=int(state["dropped_bullets"]),
+                dropped_points=int(state["dropped_points"]),
+                reports_cited_per_group=dict(state["reports_cited_per_group"]),
+                group_keys=dict(state["group_keys"]),
             )
             logger.info(
                 "chat_request status=%s mode=%s route=%s chunks=%d latency_ms=%.1f "
@@ -618,12 +640,14 @@ class RagPipeline:
         bundle: Any,
         chunks: List[RetrievedChunk],
         cited_report_ids: Optional[List[str]] = None,
+        group_labels: Optional[List[str]] = None,
     ) -> str:
         """
         Backend coverage sentence for cross_report answers (fix pack H3b).
 
         Fix pack J3b: only reports actually cited in the final answer are
-        counted, so the sentence and the Sumber block always agree.
+        counted, so the sentence and the Sumber block always agree. Fix pack 9:
+        only the groups that were rendered are counted.
         """
         if state.get("mode") != QueryMode.CROSS_REPORT.value:
             return ""
@@ -644,7 +668,9 @@ class RagPipeline:
                 label = group_by_report.get(report_id)
                 if label is not None:
                     shown_counts[label] = shown_counts.get(label, 0) + 1
-            totals = comparison_totals(self.knowledge_base, filters, compare_by)
+            totals = comparison_totals(
+                self.knowledge_base, filters, compare_by, labels=group_labels
+            )
             return build_coverage_line(totals, shown_counts)
 
         shown = len(
@@ -679,6 +705,141 @@ class RagPipeline:
             error_type=error_type,
         )
 
+    @staticmethod
+    def _rendered_citations(answer_text: str, bundle: Any) -> List[str]:
+        """Cited reports read from the FINAL rendered text only (fix pack 9)."""
+        return process_citations(
+            answer_text, bundle.alias_map, list(bundle.report_metadata)
+        ).cited_report_ids
+
+    def _merge_incidents(
+        self, state: Dict[str, Any], incidents: Dict[str, int]
+    ) -> None:
+        for key, value in incidents.items():
+            state["incidents"][key] = state["incidents"].get(key, 0) + value
+
+    def _active_compare_groups(
+        self,
+        state: Dict[str, Any],
+        compare_by: str,
+        group_aliases: Dict[str, List[str]],
+    ) -> List[str]:
+        """
+        Groups that may be rendered (fix pack 9, O2a).
+
+        A group must have at least one retrieved document, and when the question
+        named competition types, only those requested types are kept. A group
+        with no document is never rendered and never counted.
+        """
+        active = [label for label, aliases in group_aliases.items() if aliases]
+        if compare_by == "competition_type":
+            requested = list(
+                (state.get("filters") or {}).get("competition_type") or []
+            )
+            if requested:
+                active = [label for label in active if label in requested]
+        return active
+
+    def _compare_call(
+        self,
+        state: Dict[str, Any],
+        user_prompt: str,
+        group_keys: Dict[str, str],
+        deadline: Optional[Deadline],
+        *,
+        name: str = "answer_compare",
+        attempt: int = 1,
+        repair: bool = False,
+    ):
+        """One structured comparison call, through the same limiter as always."""
+        response_format = compare_answer.response_format(list(group_keys))
+        completion = self.llm.complete(
+            prompts.SYSTEM_PROMPT_COMPARE,
+            user_prompt,
+            temperature=config.LLM_TEMPERATURE_CHAT,
+            max_tokens=config.LLM_MAX_OUTPUT_TOKENS_COMPARE,
+            reasoning_effort=self.answer_reasoning_effort,
+            json_mode=True,
+            response_format=response_format,
+            deadline=deadline,
+            queue_max_wait_seconds=(
+                config.QUEUE_MAX_WAIT_RETRY_SECONDS if repair else None
+            ),
+        )
+        state["calls"].append(completion.to_metrics(name))
+        state["raw_answers"].append(self._raw_answer(attempt, completion))
+        return completion
+
+    def _validate_compare_payload(
+        self,
+        content: str,
+        group_keys: Dict[str, str],
+        bundle: Any,
+        report_group: Dict[str, str],
+    ):
+        payload = compare_answer.parse_payload(content)
+        return compare_answer.validate_payload(
+            payload,
+            group_keys=group_keys,
+            alias_map=bundle.alias_map,
+            report_group=report_group,
+            retrieved=list(bundle.report_metadata),
+        )
+
+    def _compare_repair(
+        self,
+        state: Dict[str, Any],
+        user_prompt: str,
+        group_keys: Dict[str, str],
+        bundle: Any,
+        report_group: Dict[str, str],
+        empty_labels: List[str],
+        deadline: Optional[Deadline],
+    ):
+        """
+        One repair retry for empty groups (fix pack 9, O3).
+
+        Returns the new validation, or None when the retry cannot be served or
+        still produces nothing usable. A refusal never overwrites a first
+        outcome: the caller only repairs when a group has no valid point.
+        """
+        keys = [
+            key for key, label in group_keys.items() if label in empty_labels
+        ]
+        retry_prompt = (
+            f"{user_prompt}\n\n{prompts.COMPARE_REPAIR_INSTRUCTION}\n"
+            f"Kunci kelompok yang masih kosong: {', '.join(keys)}."
+        )
+        try:
+            completion = self._compare_call(
+                state,
+                retry_prompt,
+                group_keys,
+                deadline,
+                name="answer_compare_retry",
+                attempt=2,
+                repair=True,
+            )
+        except (LLMRateLimitError, QueueDeadlineExceeded, DeadlineExceeded) as exc:
+            state["incidents"]["repair_unavailable"] = 1
+            state["retry_after_seconds"] = getattr(exc, "retry_after_seconds", None)
+            return None
+        except LLMError:
+            state["incidents"]["repair_failed"] = 1
+            return None
+
+        state["incidents"]["structured_repair"] = (
+            state["incidents"].get("structured_repair", 0) + 1
+        )
+        if completion.finish_reason == "length":
+            return None
+        try:
+            return self._validate_compare_payload(
+                completion.content, group_keys, bundle, report_group
+            )
+        except compare_answer.CompareFormatError:
+            return None
+
     def _compose_compare_answer(
         self,
         result,
@@ -691,9 +852,11 @@ class RagPipeline:
         """
         Comparison answer as validated JSON rendered by the backend (fix pack J1).
 
-        The model writes no heading, no citation and no count. Invalid JSON or a
-        truncated completion is a technical error with no retry (quota), and a
-        payload with nothing traceable to a document is NO_SOURCE.
+        Fix pack 9: only the groups that were requested and have documents are
+        in the schema and in the coverage line; a group key the model wrote is
+        never a label. Invalid JSON or a truncated completion is a technical
+        error with no retry (quota), and a payload with nothing traceable to a
+        document is NO_SOURCE.
         """
         compare_by = state.get("compare_by")
         labels = [
@@ -719,24 +882,33 @@ class RagPipeline:
             if alias and alias not in group_aliases[label]:
                 group_aliases[label].append(alias)
 
+        active_labels = self._active_compare_groups(state, compare_by, group_aliases)
+        if not active_labels:
+            return self._structured_technical_error(
+                result, state, "invalid_structured_output"
+            )
+        group_keys = {
+            config.COMPARE_GROUP_KEY_TEMPLATE.format(index=index): label
+            for index, label in enumerate(active_labels, start=1)
+        }
+        active_aliases = {label: group_aliases[label] for label in active_labels}
+        state["group_keys"] = dict(group_keys)
+
+        active_group_status = [
+            group
+            for group in (state.get("groups") or [])
+            if group.get("label") in active_labels
+        ]
         user_prompt = prompts.COMPARE_USER_TEMPLATE.format(
             context=bundle.text,
-            hint=prompts.build_group_hint(state.get("groups") or [], compare_by),
-            group_aliases=prompts.build_compare_group_aliases(group_aliases),
+            hint=prompts.build_group_hint(active_group_status, compare_by),
+            group_keys=prompts.build_compare_group_keys(group_keys),
+            group_aliases=prompts.build_compare_group_aliases(
+                active_aliases, group_keys
+            ),
             question=question,
         )
-        completion = self.llm.complete(
-            prompts.SYSTEM_PROMPT_COMPARE,
-            user_prompt,
-            temperature=config.LLM_TEMPERATURE_CHAT,
-            max_tokens=config.LLM_MAX_OUTPUT_TOKENS_COMPARE,
-            reasoning_effort=self.answer_reasoning_effort,
-            json_mode=True,
-            response_format=compare_answer.response_format(labels),
-            deadline=deadline,
-        )
-        state["calls"].append(completion.to_metrics("answer_compare"))
-        state["raw_answers"].append(self._raw_answer(1, completion))
+        completion = self._compare_call(state, user_prompt, group_keys, deadline)
 
         if completion.finish_reason == "length":
             state["incidents"]["answer_truncated"] = 1
@@ -746,29 +918,52 @@ class RagPipeline:
 
         started = time.perf_counter()
         try:
-            payload = compare_answer.parse_payload(completion.content)
-            validation = compare_answer.validate_payload(
-                payload,
-                labels=labels,
-                alias_map=bundle.alias_map,
-                report_group=report_group,
-                retrieved=list(bundle.report_metadata),
+            validation = self._validate_compare_payload(
+                completion.content, group_keys, bundle, report_group
             )
         except compare_answer.CompareFormatError:
             return self._structured_technical_error(
                 result, state, "invalid_structured_output"
             )
         self._mark(state, "compare_validate", started)
+        self._merge_incidents(state, validation.incidents)
 
-        for key, value in validation.incidents.items():
-            state["incidents"][key] = state["incidents"].get(key, 0) + value
+        empty_labels = validation.group_empty
+        if empty_labels and config.STRUCTURED_REPAIR_RETRIES > 0:
+            # Fix pack 9 (O2e/O3a): one repair retry per answer. A failed or
+            # unaffordable repair degrades instead of claiming there is no
+            # evidence: the groups with points are rendered, the contrasts are
+            # omitted, and the empty group says the attempt failed.
+            repaired = self._compare_repair(
+                state,
+                user_prompt,
+                group_keys,
+                bundle,
+                report_group,
+                empty_labels,
+                deadline,
+            )
+            if repaired is not None:
+                validation = repaired
+                empty_labels = validation.group_empty
+                self._merge_incidents(state, validation.incidents)
+        degraded = bool(empty_labels)
+        if degraded:
+            state["incidents"]["group_empty"] = len(empty_labels)
 
         if validation.is_empty:
             return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
 
         started = time.perf_counter()
-        answer_text = compare_answer.render_answer(validation, compare_by)
+        answer_text = compare_answer.render_answer(
+            validation, compare_by, degraded=degraded
+        )
+        state["reports_cited_per_group"] = dict(validation.reports_cited_per_group)
         self._mark(state, "render", started)
+
+        # Fix pack 9: the Sumber block rests on the reports the FINAL rendered
+        # text cites, so an omitted contrast can never claim a source.
+        cited_report_ids = self._rendered_citations(answer_text, bundle)
 
         started = time.perf_counter()
         state["style"] = citation_style_metrics(answer_text)
@@ -784,7 +979,7 @@ class RagPipeline:
 
         started = time.perf_counter()
         coverage_line = self._coverage_line(
-            state, bundle, chunks, validation.cited_report_ids
+            state, bundle, chunks, cited_report_ids, group_labels=active_labels
         )
         state["coverage"] = coverage_line
         if coverage_line:
@@ -792,16 +987,181 @@ class RagPipeline:
         self._mark(state, "coverage", started)
 
         started = time.perf_counter()
-        source_block = build_source_block(
-            validation.cited_report_ids, bundle.report_metadata
-        )
+        source_block = build_source_block(cited_report_ids, bundle.report_metadata)
         final_answer = compose_answer(answer_text, source_block)
         self._mark(state, "sources", started)
 
         return result(
             AnswerStatus.ANSWERED,
             final_answer,
-            cited=validation.cited_report_ids,
+            cited=cited_report_ids,
+        )
+
+    def _structured_answer_call(
+        self,
+        state: Dict[str, Any],
+        user_prompt: str,
+        deadline: Optional[Deadline],
+        *,
+        name: str = "answer_structured",
+        attempt: int = 1,
+        repair: bool = False,
+    ):
+        """One structured free-text call through the normal limiter path."""
+        completion = self.llm.complete(
+            prompts.SYSTEM_PROMPT_STRUCTURED,
+            user_prompt,
+            temperature=config.LLM_TEMPERATURE_CHAT,
+            max_tokens=config.LLM_MAX_OUTPUT_TOKENS_FREE,
+            reasoning_effort=self.answer_reasoning_effort,
+            json_mode=True,
+            response_format=structured_answer.response_format(),
+            deadline=deadline,
+            queue_max_wait_seconds=(
+                config.QUEUE_MAX_WAIT_RETRY_SECONDS if repair else None
+            ),
+        )
+        state["calls"].append(completion.to_metrics(name))
+        state["raw_answers"].append(self._raw_answer(attempt, completion))
+        return completion
+
+    def _validate_structured_payload(self, content: str, bundle: Any):
+        payload = structured_answer.parse_payload(content)
+        return structured_answer.validate_payload(
+            payload,
+            alias_map=bundle.alias_map,
+            retrieved=list(bundle.report_metadata),
+        )
+
+    def _compose_structured_answer(
+        self,
+        result,
+        state: Dict[str, Any],
+        bundle: Any,
+        question: str,
+        mode: QueryMode,
+        deadline: Optional[Deadline] = None,
+        hint_extra: str = "",
+        id_route: bool = False,
+    ) -> RagResult:
+        """
+        Free-text answer as validated JSON rendered by the backend (fix pack 9).
+
+        The model writes no heading, no count and no citation: each point carries
+        its own ``cite`` list and the backend resolves it. A model-declared
+        ``found=false`` is decisive and never retried; a payload with no valid
+        point at all gets one repair retry, and a repair that cannot be served is
+        RATE_LIMITED instead of a misleading NO_SOURCE.
+        """
+        user_prompt = self._answer_user_prompt(
+            bundle.text, question, mode, hint_extra=hint_extra
+        )
+        completion = self._structured_answer_call(state, user_prompt, deadline)
+
+        if completion.finish_reason == "length":
+            state["incidents"]["answer_truncated"] = 1
+            return self._structured_technical_error(
+                result, state, "invalid_structured_output"
+            )
+
+        try:
+            validation = self._validate_structured_payload(completion.content, bundle)
+        except structured_answer.StructuredAnswerError:
+            return self._structured_technical_error(
+                result, state, "invalid_structured_output"
+            )
+        self._merge_incidents(state, validation.incidents)
+        state["dropped_points"] = validation.dropped_points
+
+        if not validation.found:
+            return self._declared_not_found(result, state, id_route)
+
+        if not validation.points and config.STRUCTURED_REPAIR_RETRIES <= 0:
+            return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
+
+        if not validation.points:
+            retry_prompt = (
+                f"{user_prompt}\n\n"
+                f"{prompts.build_structured_repair_prompt(bundle.alias_map, 'Tidak ada poin yang valid.')}"
+            )
+            try:
+                retry = self._structured_answer_call(
+                    state,
+                    retry_prompt,
+                    deadline,
+                    name="answer_structured_retry",
+                    attempt=2,
+                    repair=True,
+                )
+            except (LLMRateLimitError, QueueDeadlineExceeded, DeadlineExceeded) as exc:
+                state["incidents"]["repair_unavailable"] = 1
+                logger.warning("chat_structured_repair_unavailable")
+                return result(
+                    AnswerStatus.RATE_LIMITED,
+                    prompts.RATE_LIMITED_RESPONSE,
+                    error_type=type(exc).__name__,
+                    retry_after_seconds=getattr(exc, "retry_after_seconds", None),
+                )
+            except LLMError:
+                state["incidents"]["repair_failed"] = 1
+                return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
+
+            state["incidents"]["structured_repair"] = (
+                state["incidents"].get("structured_repair", 0) + 1
+            )
+            if retry.finish_reason == "length":
+                state["incidents"]["answer_truncated"] = 1
+                return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
+            try:
+                validation = self._validate_structured_payload(retry.content, bundle)
+            except structured_answer.StructuredAnswerError:
+                return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
+            self._merge_incidents(state, validation.incidents)
+            state["dropped_points"] = validation.dropped_points
+            if not validation.found:
+                return self._declared_not_found(result, state, id_route)
+            if not validation.points:
+                return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
+
+        started = time.perf_counter()
+        answer_text = structured_answer.render_answer(validation)
+        self._mark(state, "render", started)
+
+        started = time.perf_counter()
+        guarded = self.output_guard.apply(answer_text)
+        self._mark(state, "guardrails", started)
+        self._merge_incidents(state, guarded.incidents)
+        if guarded.blocked:
+            return result(AnswerStatus.SECURITY_REFUSED, guarded.text, cited=[])
+        answer_text = guarded.text
+
+        # Sumber rests on the reports the FINAL rendered text cites.
+        cited_report_ids = self._rendered_citations(answer_text, bundle)
+
+        started = time.perf_counter()
+        state["style"] = citation_style_metrics(answer_text)
+        state["negation"] = negation_sentences(answer_text)
+        state["causal"] = causal_connectors(answer_text)
+        self._mark(state, "metrics", started)
+
+        started = time.perf_counter()
+        coverage_line = self._coverage_line(
+            state, bundle, list(bundle.chunk_ids), cited_report_ids
+        )
+        state["coverage"] = coverage_line
+        if coverage_line:
+            answer_text = f"{answer_text}{config.COVERAGE_BLOCK_SEPARATOR}{coverage_line}"
+        self._mark(state, "coverage", started)
+
+        started = time.perf_counter()
+        source_block = build_source_block(cited_report_ids, bundle.report_metadata)
+        final_answer = compose_answer(answer_text, source_block)
+        self._mark(state, "sources", started)
+
+        return result(
+            AnswerStatus.ANSWERED,
+            final_answer,
+            cited=cited_report_ids,
         )
 
     def _compose_answer(
@@ -857,6 +1217,18 @@ class RagPipeline:
             question = prompts.build_id_route_question(question, bundle.alias_map)
             hint_extra = prompts.build_id_route_hint(
                 bundle.alias_map, state.get("missing_report_ids") or ()
+            )
+
+        if config.ANSWER_FORMAT == "structured":
+            return self._compose_structured_answer(
+                result,
+                state,
+                bundle,
+                question,
+                mode,
+                deadline=deadline,
+                hint_extra=hint_extra,
+                id_route=id_route,
             )
 
         completion = self._answer_with_llm(

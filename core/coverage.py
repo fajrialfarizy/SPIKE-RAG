@@ -42,10 +42,19 @@ def comparison_totals(
     knowledge_base: Any,
     filters: Dict[str, Sequence[Any]] | None,
     compare_by: str,
+    labels: Sequence[str] | None = None,
 ) -> list:
-    """Configured groups in order, each with its total distinct-report count."""
+    """
+    Configured groups in order, each with its total distinct-report count.
+
+    ``labels`` restricts the sentence to the groups actually rendered (fix pack
+    9): a configured group with no document in the context is not counted.
+    """
     totals = []
+    allowed = None if labels is None else set(labels)
     for group in config.COMPARISON_GROUPS.get(compare_by, ()):
+        if allowed is not None and group["label"] not in allowed:
+            continue
         merged = merge_filter_dicts(filters, group.get("filter"))
         # Fix pack L2: the coverage sentence uses the model-facing group name, so
         # the answer, the headings and the sentence never disagree.
@@ -73,7 +82,12 @@ def build_coverage_line(
     totals: Sequence[Dict[str, Any]],
     shown_counts: Dict[str, int],
 ) -> str:
-    """Coverage sentence for a grouped comparison answer."""
+    """
+    Coverage sentence for a grouped comparison answer.
+
+    Fix pack 9 (O2a): commas between groups and "dan" only before the last, so
+    the sentence reads correctly for two and for more groups.
+    """
     parts = [
         config.COVERAGE_GROUP_TEMPLATE.format(
             shown=int(shown_counts.get(item["label"], 0)),
@@ -82,8 +96,17 @@ def build_coverage_line(
         )
         for item in totals
     ]
-    return f"{config.COVERAGE_PREFIX}{config.COVERAGE_JOINER.join(parts)}" \
-        f"{config.COVERAGE_SUFFIX}"
+    if not parts:
+        return ""
+    joiner = (
+        config.COVERAGE_TWO_GROUP_JOINER if len(parts) == 2 else config.COVERAGE_JOINER
+    )
+    body = joiner.join(parts[:-1])
+    if len(parts) > 1:
+        body = f"{body}{config.COVERAGE_FINAL_JOINER}{parts[-1]}"
+    else:
+        body = parts[0]
+    return f"{config.COVERAGE_PREFIX}{body}{config.COVERAGE_SUFFIX}"
 
 
 def build_cross_report_coverage_line(shown: int, total: int) -> str:

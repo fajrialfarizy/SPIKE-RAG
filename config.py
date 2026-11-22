@@ -139,6 +139,40 @@ RETRIEVAL_CANDIDATE_MULTIPLIER = 3
 RETRIEVAL_CROSS_REPORT_K = 12
 RETRIEVAL_CROSS_REPORT_MAX_CHUNKS_PER_REPORT = 2
 
+# Structured free-text answers (fix pack 9, O1). specific, the exact report-id
+# route and cross_report without compare_by answer through the same strict JSON
+# schema the comparison path already uses, because free prose ignored the bullet
+# and citation caps: the real run returned 12 uncited bullets and the citation
+# repair retry then exceeded the queue wait. The schema makes the cap and the
+# citation a field of the answer instead of an instruction the model may skip.
+# "text" is the old free-prose path; it is selectable only by config and is
+# never used as a runtime fallback.
+ANSWER_FORMAT = "structured"
+ANSWER_FORMAT_VALUES = ("structured", "text")
+ANSWER_JSON_SCHEMA_NAME = "answer"
+# Per-point caps are validated by the backend, not by the schema (the documented
+# keyword subset does not promise maxItems/minItems).
+ANSWER_POINT_MAX_WORDS = 40
+ANSWER_CITE_MIN = 1
+ANSWER_CITE_MAX = 2
+# Justification for 700: a structured answer is at most 6 points of 40 words
+# (~240 tokens of Indonesian text) plus per-point citation arrays, and effort
+# "low" adds the measured 160-250 reasoning tokens; 700 leaves room for the
+# worst allowed payload without paying for a long free answer. The previous
+# free-text cap was 800.
+LLM_MAX_OUTPUT_TOKENS_FREE = 700
+# One repair retry when a structured answer has no valid point at all, and when
+# a comparison group that has documents ends with no valid point. Invalid JSON
+# and a truncated completion are never retried: they cost quota and fail the
+# same way.
+STRUCTURED_REPAIR_RETRIES = 1
+# The repair retry may wait longer for the minute token window than a first
+# call, because refusing it turns a recoverable answer into RATE_LIMITED. It is
+# still bounded: a student waits at most this long before the final status, and
+# a wait beyond it is refused at once with retry_after_seconds.
+QUEUE_MAX_WAIT_RETRY_SECONDS = 60.0
+ANSWER_BULLET_TEMPLATE = "- {text} {citations}"
+
 # Comparison mode (fix pack H3): each group contributes distinct reports with
 # one chunk per report, so every listed team is a separate source.
 COMPARE_REPORTS_PER_GROUP = 3
@@ -589,7 +623,11 @@ CONTEXT_DOCUMENT_SEPARATOR = "\n\n"
 COVERAGE_BLOCK_SEPARATOR = "\n\n"
 COVERAGE_PREFIX = "Ringkasan ini didasarkan pada "
 COVERAGE_GROUP_TEMPLATE = "{shown} dari {total} laporan {label}"
-COVERAGE_JOINER = " dan "
+# Fix pack 9 (O2a): commas between groups, "dan" only before the last one, so
+# the sentence stays readable with two and with four groups.
+COVERAGE_JOINER = ", "
+COVERAGE_FINAL_JOINER = " dan "
+COVERAGE_TWO_GROUP_JOINER = " dan "
 COVERAGE_SUFFIX = "."
 COVERAGE_CROSS_TEMPLATE = (
     "Ringkasan ini didasarkan pada {shown} dari {total} laporan yang sesuai."
@@ -834,10 +872,30 @@ COMPARE_POINTS_PER_GROUP_MAX = 3
 # validated: a free difference naming one group only was dropped every time.
 COMPARE_CONTRASTS_MAX = 2
 COMPARE_POINT_MAX_WORDS = 40
-COMPARE_DIMENSION_MAX_WORDS = 8
+COMPARE_DIMENSION_MAX_WORDS = 6
 COMPARE_CONTRAST_TEXT_MAX_WORDS = 35
 COMPARE_CITE_MIN = 1
 COMPARE_CITE_MAX = 2
+# A contrast side may rest on up to three of its own group's reports, because a
+# side summarizes the group rather than one fact. Exceeding the limit drops the
+# side (and its contrast) instead of silently cutting the list: the real run cut
+# three aliases to two and attributed a claim to the wrong reports.
+COMPARE_CONTRAST_CITE_MAX = 3
+# Fix pack 9 (O2d): a dimension must name a concrete topic. These generic words
+# describe no dimension a reader could compare.
+COMPARE_GENERIC_DIMENSIONS = (
+    "pembelajaran",
+    "kendala",
+    "perbedaan",
+    "umum",
+    "lainnya",
+    "hal",
+    "aspek",
+)
+# Model-facing group keys (fix pack 9, O2b): the model returns g1, g2, ... and
+# the backend maps them to labels, so it can never invent a group name.
+COMPARE_GROUP_KEY_TEMPLATE = "g{index}"
+COMPARE_GROUP_KEY_LINE = "- {key} = {label}"
 # Fix pack 8: the backend writes the group heading in bold, followed by a blank
 # line, so a group name reads as a heading instead of a stray prose line.
 COMPARE_GROUP_HEADING_TEMPLATE = "**{label}**"
@@ -846,6 +904,13 @@ COMPARE_CONTRAST_DIMENSION_TEMPLATE = "- {dimension}"
 COMPARE_CONTRAST_SIDE_TEMPLATE = "  - {label}: {text} {citations}"
 COMPARE_EMPTY_GROUP = (
     "Tidak ada poin yang dapat ditelusuri ke dokumen untuk kelompok ini."
+)
+# Fix pack 9 (O2e): a group that HAS documents but produced no valid point after
+# the repair retry must never claim there is no evidence. This sentence says the
+# attempt failed, which is the truth, and asks the student to retry.
+COMPARE_GROUP_EMPTY_RETRY = (
+    "Poin untuk kelompok ini belum dapat disusun dari dokumen yang diambil pada "
+    "percobaan ini. Silakan coba ulangi pertanyaan."
 )
 COMPARE_BULLET_TEMPLATE = "- {text} {citations}"
 # One citation format everywhere (fix pack L6): separate brackets, one space,
@@ -884,6 +949,15 @@ NEGATION_LABEL_PHRASES = (
 )
 # Backend-written lines are skipped entirely: coverage, source block title/rows.
 NEGATION_SKIP_LINE_PREFIXES = ("Ringkasan ini didasarkan pada", "**Sumber**")
+# Fix pack 9 (O4): backend sentences the model never wrote. The empty-group
+# sentence was counted as a model negation in the real run, so a line that
+# starts with any of these phrases is not measured at all.
+NEGATION_BACKEND_PHRASES = (
+    COVERAGE_PREFIX,
+    SOURCE_BLOCK_TITLE,
+    COMPARE_EMPTY_GROUP,
+    COMPARE_GROUP_EMPTY_RETRY,
+)
 PATTERN_NEGATION_SOURCE_ROW = re.compile(r"^-\s*RPT[0-9]{4,}\b")
 NEGATION_SUBJECT_MARKERS = (
     "tim",

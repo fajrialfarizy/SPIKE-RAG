@@ -38,7 +38,7 @@ from core.llm_client import GroqLLMClient
 from core.pipeline import RagPipeline, configure_file_logging
 from core.rate_limiter import get_token_limiter
 from core.tokens import E5TokenCounter
-from core.warmup import WarmupError, warm_up_embedder
+from core.warmup import WarmupError, warm_up_embedder, warm_up_knowledge_base
 from ingestion.embedder import E5Embedder
 
 # One run covers every status path that needs a real model, including the
@@ -272,9 +272,15 @@ def main(argv: Optional[list] = None) -> int:
     token_started = time.perf_counter()
     token_counter.count_tokens(config.EMBEDDING_WARMUP_QUERY)
     print(
-        f"tokenizer warm-up: {round((time.perf_counter() - token_started) * 1000.0, 1)} ms",
+        f"tokenizer warm-up: "
+        f"{round((time.perf_counter() - token_started) * 1000.0, 1)} ms",
         flush=True,
     )
+
+    # Fix pack 9 (O6a): first Chroma query and first metadata read are cold paths
+    # the embedder warm-up does not touch.
+    retrieval_warmup = warm_up_knowledge_base(knowledge_base, embedder)
+    print(f"retrieval warm-up: {retrieval_warmup}", flush=True)
 
     # Fix pack 8 (N4): the provider client import/construction must not be charged
     # to the first question; build it during warm-up and print the cost.
@@ -301,9 +307,17 @@ def main(argv: Optional[list] = None) -> int:
     causal_total = 0
     contrast_invalid_total = 0
     contrast_truncated_total = 0
+    structured_totals = {
+        "dropped_points": 0,
+        "point_uncited": 0,
+        "cite_over_limit_dropped": 0,
+        "group_empty": 0,
+        "structured_repair": 0,
+    }
     style_totals = {"mid_sentence_citations": 0, "unbalanced_parentheses": 0}
     print(
         f"model={config.LLM_MODEL_NAME} answer_effort={args.answer_effort} "
+        f"answer_format={config.ANSWER_FORMAT} "
         f"questions={len(scenarios)} delay={args.delay}s "
         f"token_budget={args.token_budget} daily_tokens={daily_limit}",
         flush=True,
@@ -345,6 +359,24 @@ def main(argv: Optional[list] = None) -> int:
             f"style={_json(result.debug.style)} "
             f"incidents={_json(result.debug.incidents)}"
         )
+        # Fix pack 9 (O4/O5): the structured-answer counters and the group key
+        # mapping are printed for every question, so a real run is diagnosable.
+        incidents = result.debug.incidents or {}
+        print(
+            "structured_incidents: "
+            f"dropped_points={result.debug.dropped_points} "
+            f"point_uncited={incidents.get('point_uncited', 0)} "
+            f"cite_over_limit_dropped={incidents.get('cite_over_limit_dropped', 0)} "
+            f"group_empty={incidents.get('group_empty', 0)} "
+            f"structured_repair={incidents.get('structured_repair', 0)} "
+            f"unknown_alias={incidents.get('unknown_alias', 0)}"
+        )
+        if result.debug.reports_cited_per_group:
+            print(
+                f"reports_cited_per_group={_json(result.debug.reports_cited_per_group)}"
+            )
+        if result.debug.group_keys:
+            print(f"group_keys={_json(result.debug.group_keys)}")
         negation = result.debug.negation or {}
         causal = result.debug.causal or {}
         print(
@@ -404,6 +436,11 @@ def main(argv: Optional[list] = None) -> int:
         incidents = result.debug.incidents or {}
         contrast_invalid_total += int(incidents.get("contrast_invalid") or 0)
         contrast_truncated_total += int(incidents.get("contrast_truncated") or 0)
+        structured_totals["dropped_points"] += int(result.debug.dropped_points or 0)
+        for key in structured_totals:
+            if key == "dropped_points":
+                continue
+            structured_totals[key] += int(incidents.get(key) or 0)
         for key in style_totals:
             style_totals[key] += int((result.debug.style or {}).get(key) or 0)
 
@@ -459,6 +496,8 @@ def main(argv: Optional[list] = None) -> int:
     print(f"causal_connectors_total={causal_total}")
     print(f"contrast_invalid_total={contrast_invalid_total}")
     print(f"contrast_truncated_total={contrast_truncated_total}")
+    print(f"answer_format={config.ANSWER_FORMAT}")
+    print(f"structured_totals={_json(structured_totals)}")
     print(f"style_totals={_json(style_totals)}")
     print(
         f"cached_tokens={cached_tokens}"

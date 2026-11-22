@@ -37,7 +37,7 @@ from core.pipeline import AnswerStatus, RagPipeline, configure_file_logging
 from core.rate_limiter import TokenAwareRateLimiter, get_token_limiter
 from core.settings import Settings, SettingsError, load_settings
 from core.tokens import E5TokenCounter
-from core.warmup import WarmupError, warm_up_embedder
+from core.warmup import WarmupError, warm_up_embedder, warm_up_knowledge_base
 from ingestion.embedder import E5Embedder
 
 logger = logging.getLogger("app")
@@ -160,6 +160,11 @@ def build_runtime(settings: Settings) -> AppRuntime:
     llm_client = GroqLLMClient(api_key=settings.groq.api_key)
     llm_warmup_ms = llm_client.warm_up()
     logger.info("llm_client_warmup_ms=%.1f", llm_warmup_ms)
+
+    # Fix pack 9 (O6a): the first question still paid 1,240 ms for the first
+    # Chroma query and the metadata read. Exercise both here; no model call.
+    retrieval_warmup = warm_up_knowledge_base(version.handle, embedder)
+    logger.info("retrieval_warmup=%s", retrieval_warmup)
 
     pipeline = RagPipeline(
         knowledge_base=version.handle,

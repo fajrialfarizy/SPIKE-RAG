@@ -161,11 +161,14 @@ class LLMClient(ABC):
         json_mode: bool = False,
         response_format: Optional[Mapping[str, Any]] = None,
         deadline: Optional[Deadline] = None,
+        queue_max_wait_seconds: Optional[float] = None,
     ) -> LLMResult:
         """Return the final content only (never reasoning).
 
         ``response_format`` carries a full Structured Outputs object (fix pack
-        J1); when given it wins over ``json_mode``.
+        J1); when given it wins over ``json_mode``. ``queue_max_wait_seconds``
+        overrides the limiter's queue limit for this call only (fix pack 9: the
+        one structured repair retry may wait longer than a first call).
         """
 
 
@@ -525,6 +528,7 @@ class GroqLLMClient(LLMClient):
         max_tokens: int,
         json_mode: bool,
         response_format: Optional[Mapping[str, Any]],
+        max_wait_seconds: Optional[float] = None,
     ) -> tuple:
         """Reserve this call's estimated tokens or turn the refusal into a 429."""
         limiter = self.token_limiter
@@ -540,7 +544,7 @@ class GroqLLMClient(LLMClient):
             static_extra=static_extra,
         )
         try:
-            return limiter.reserve(estimate), estimate
+            return limiter.reserve(estimate, max_wait_seconds=max_wait_seconds), estimate
         except DailyTokenBudgetExhausted as exc:
             logger.warning("llm_token_budget_exhausted window=daily")
             raise LLMRateLimitError(
@@ -579,6 +583,7 @@ class GroqLLMClient(LLMClient):
         json_mode: bool = False,
         response_format: Optional[Mapping[str, Any]] = None,
         deadline: Optional[Deadline] = None,
+        queue_max_wait_seconds: Optional[float] = None,
     ) -> LLMResult:
         self._ensure_client()
 
@@ -592,7 +597,12 @@ class GroqLLMClient(LLMClient):
             tokens_before = self.token_limiter.snapshot()["tokens_used_this_minute"]
             reserve_started = self._deadline_elapsed(deadline)
             reservation, estimate = self._reserve_tokens(
-                system_prompt, user_prompt, max_tokens, json_mode, response_format
+                system_prompt,
+                user_prompt,
+                max_tokens,
+                json_mode,
+                response_format,
+                max_wait_seconds=queue_max_wait_seconds,
             )
             # A queue wait is not model time: refund it to the deadline, so the
             # answer call still gets the full model budget (fix pack 7).

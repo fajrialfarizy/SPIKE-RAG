@@ -1,18 +1,19 @@
 """
-Structured comparison answers (fix pack J1).
+Structured comparison answers (fix pack J1, keyed in fix pack 9).
 
 The comparison path asks the model for JSON only:
 
-    {"groups": [{"label": ..., "points": [{"text": ..., "cite": [...]}]}],
+    {"groups": {"g1": [{"text": ..., "cite": [...]}], "g2": [...]},
      "contrasts": [{"dimension": ...,
-                    "sides": [{"label": ..., "text": ..., "cite": [...]}]}]}
+                    "sides": [{"group": "g1", "text": ..., "cite": [...]}]}]}
 
-A contrast is a pair of sides on the same dimension, exactly one per group
-(fix pack 8, N1). The free "differences" list could name one group only, which
-made every difference unsupported; a paired shape can be validated instead.
+Fix pack 9 replaced label strings with model-facing keys (g1, g2, ...): the model
+never writes a group name, so it cannot invent one, and the backend owns the
+mapping to the configured label. All keys are required (strict mode), but only
+the groups that were requested and actually have documents are in the schema, so
+an empty group is never rendered or counted.
 
-The model never writes a heading, a citation, a count or the Sumber block. This
-module owns the contract:
+The model never writes a heading, a citation, a count or the Sumber block:
 
 - ``build_schema`` returns a Groq Structured Outputs schema (strict mode: every
   property is required and every object sets ``additionalProperties: false``;
@@ -20,13 +21,13 @@ module owns the contract:
   because the documented keyword subset does not promise ``minItems``/``maxItems``.
 - ``parse_payload`` parses the raw completion with no partial recovery.
 - ``validate_payload`` resolves every alias against the retrieved set, enforces
-  group membership, drops a point whose citations are all invalid, and counts
-  each rejection as an incident.
+  group membership and the citation ceilings, and counts each rejection.
 - ``render_answer`` writes the Markdown the student sees.
 
-Invalid JSON, a truncated completion or a payload that is not an object is a
-technical error, never a partially rendered answer, and is never retried: a retry
-costs quota and would fail the same way.
+A point or contrast side over its citation ceiling is DROPPED, never cut: the
+real run cut three cited aliases to two and attributed a claim to the wrong
+reports. Invalid JSON, a truncated completion or a payload that is not an object
+is a technical error and is never retried.
 """
 
 from __future__ import annotations
@@ -82,10 +83,16 @@ class CompareValidation:
     contrasts: List[CompareContrast]
     incidents: Dict[str, int] = field(default_factory=dict)
     cited_report_ids: List[str] = field(default_factory=list)
+    reports_cited_per_group: Dict[str, int] = field(default_factory=dict)
 
     @property
     def is_empty(self) -> bool:
         return not any(section.points for section in self.sections) and not self.contrasts
+
+    @property
+    def group_empty(self) -> List[str]:
+        """Groups that produced no valid point; every section has documents."""
+        return [section.label for section in self.sections if not section.points]
 
 
 def _point_schema() -> Dict[str, Any]:
@@ -100,51 +107,46 @@ def _point_schema() -> Dict[str, Any]:
     }
 
 
-def _side_schema(labels: Sequence[str]) -> Dict[str, Any]:
+def _side_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
     return {
         "type": "object",
         "properties": {
-            "label": {"type": "string", "enum": list(labels)},
+            "group": {"type": "string", "enum": list(group_keys)},
             "text": {"type": "string"},
             "cite": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["label", "text", "cite"],
+        "required": ["group", "text", "cite"],
         "additionalProperties": False,
     }
 
 
-def _contrast_schema(labels: Sequence[str]) -> Dict[str, Any]:
+def _contrast_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
     return {
         "type": "object",
         "properties": {
             "dimension": {"type": "string"},
-            "sides": {"type": "array", "items": _side_schema(labels)},
+            "sides": {"type": "array", "items": _side_schema(group_keys)},
         },
         "required": ["dimension", "sides"],
         "additionalProperties": False,
     }
 
 
-def build_schema(labels: Sequence[str]) -> Dict[str, Any]:
-    """Strict JSON Schema for one comparison answer over the given group labels."""
+def build_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
+    """Strict JSON Schema for one comparison answer over the given group keys."""
+    keys = list(group_keys)
     return {
         "type": "object",
         "properties": {
             "groups": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "label": {"type": "string", "enum": list(labels)},
-                        "points": {"type": "array", "items": _point_schema()},
-                    },
-                    "required": ["label", "points"],
-                    "additionalProperties": False,
-                },
+                "type": "object",
+                "properties": {key: {"type": "array", "items": _point_schema()} for key in keys},
+                "required": keys,
+                "additionalProperties": False,
             },
             "contrasts": {
                 "type": "array",
-                "items": _contrast_schema(labels),
+                "items": _contrast_schema(keys),
             },
         },
         "required": ["groups", "contrasts"],
@@ -152,14 +154,14 @@ def build_schema(labels: Sequence[str]) -> Dict[str, Any]:
     }
 
 
-def response_format(labels: Sequence[str]) -> Dict[str, Any]:
+def response_format(group_keys: Sequence[str]) -> Dict[str, Any]:
     """The ``response_format`` object Groq expects for strict structured output."""
     return {
         "type": "json_schema",
         "json_schema": {
             "name": config.COMPARE_JSON_SCHEMA_NAME,
             "strict": True,
-            "schema": build_schema(labels),
+            "schema": build_schema(group_keys),
         },
     }
 
@@ -211,6 +213,36 @@ def _normalize_alias(value: Any) -> str:
     return str(value or "").strip().strip("[]() ").upper()
 
 
+def _resolve_cites(
+    raw_cites: Any,
+    *,
+    label: Optional[str],
+    allowed_reports: Mapping[str, str],
+    alias_map: Mapping[str, str],
+    retrieved: Sequence[str],
+    incidents: Dict[str, int],
+) -> List[str]:
+    """Resolved report ids for one point or side, in the model's own order."""
+    if isinstance(raw_cites, str):
+        raw_cites = [raw_cites]
+    if not isinstance(raw_cites, list):
+        raw_cites = []
+
+    resolved: List[str] = []
+    for item in raw_cites:
+        alias = _normalize_alias(item)
+        report_id = alias_map.get(alias)
+        if report_id is None or report_id not in retrieved:
+            incidents["unknown_alias"] += 1
+            continue
+        if label is not None and allowed_reports.get(report_id) != label:
+            incidents["cross_group_citation"] += 1
+            continue
+        if report_id not in resolved:
+            resolved.append(report_id)
+    return resolved
+
+
 def _clean_point(
     raw: Any,
     *,
@@ -235,40 +267,36 @@ def _clean_point(
         incidents["empty_point"] += 1
         return None
 
-    raw_cites = raw.get("cite")
-    if isinstance(raw_cites, str):
-        raw_cites = [raw_cites]
-    if not isinstance(raw_cites, list):
-        raw_cites = []
-
-    resolved: List[str] = []
-    for item in raw_cites:
-        alias = _normalize_alias(item)
-        report_id = alias_map.get(alias)
-        if report_id is None or report_id not in retrieved:
-            incidents["unknown_alias"] += 1
-            continue
-        if label is not None and allowed_reports.get(report_id) != label:
-            incidents["cross_group_citation"] += 1
-            continue
-        if report_id not in resolved:
-            resolved.append(report_id)
+    resolved = _resolve_cites(
+        raw.get("cite"),
+        label=label,
+        allowed_reports=allowed_reports,
+        alias_map=alias_map,
+        retrieved=retrieved,
+        incidents=incidents,
+    )
 
     if len(resolved) > config.COMPARE_CITE_MAX:
-        incidents["cite_over_limit"] += 1
-        resolved = resolved[: config.COMPARE_CITE_MAX]
+        incidents["cite_over_limit_dropped"] += 1
+        return None
 
     if len(resolved) < config.COMPARE_CITE_MIN:
-        incidents["uncited_point_dropped"] += 1
+        incidents["point_uncited"] += 1
         return None
 
     return ComparePoint(text=text, report_ids=resolved)
 
 
+def _is_generic_dimension(dimension: str) -> bool:
+    """True for a dimension that names no concrete topic (fix pack 9, O2d)."""
+    words = [word.strip(",.;:").casefold() for word in dimension.split()]
+    return any(word in config.COMPARE_GENERIC_DIMENSIONS for word in words)
+
+
 def _clean_contrast(
     raw: Any,
     *,
-    required_labels: Sequence[str],
+    group_keys: Mapping[str, str],
     allowed_reports: Mapping[str, str],
     alias_map: Mapping[str, str],
     retrieved: Sequence[str],
@@ -277,10 +305,10 @@ def _clean_contrast(
     """
     One contrast with exactly one supported side per group, or None.
 
-    Missing, duplicated or unknown labels drop the whole contrast, as does a
-    side that ends up with no citation after citations outside its own group are
-    removed. A contrast beyond the configured limit is counted as truncated, not
-    as invalid.
+    Missing, duplicated or unknown keys drop the whole contrast, as does a
+    generic dimension or a side that ends up with no citation after citations
+    outside its own group are removed. A contrast beyond the configured limit is
+    counted as truncated, not as invalid.
     """
     if not isinstance(raw, dict):
         incidents["contrast_invalid"] += 1
@@ -295,21 +323,25 @@ def _clean_contrast(
     if not dimension:
         incidents["contrast_invalid"] += 1
         return None
+    if _is_generic_dimension(dimension):
+        incidents["contrast_invalid"] += 1
+        return None
 
     raw_sides = raw.get("sides")
     if not isinstance(raw_sides, list):
         incidents["contrast_invalid"] += 1
         return None
 
-    by_label: Dict[str, CompareContrastSide] = {}
+    by_key: Dict[str, CompareContrastSide] = {}
     for raw_side in raw_sides:
         if not isinstance(raw_side, dict):
             incidents["contrast_invalid"] += 1
             return None
-        label = str(raw_side.get("label") or "").strip()
-        if label not in required_labels or label in by_label:
+        key = str(raw_side.get("group") or "").strip()
+        if key not in group_keys or key in by_key:
             incidents["contrast_invalid"] += 1
             return None
+        label = group_keys[key]
 
         text = _clean_text(
             raw_side.get("text"),
@@ -321,50 +353,40 @@ def _clean_contrast(
             incidents["contrast_invalid"] += 1
             return None
 
-        raw_cites = raw_side.get("cite")
-        if isinstance(raw_cites, str):
-            raw_cites = [raw_cites]
-        if not isinstance(raw_cites, list):
-            raw_cites = []
+        resolved = _resolve_cites(
+            raw_side.get("cite"),
+            label=label,
+            allowed_reports=allowed_reports,
+            alias_map=alias_map,
+            retrieved=retrieved,
+            incidents=incidents,
+        )
 
-        resolved: List[str] = []
-        for item in raw_cites:
-            alias = _normalize_alias(item)
-            report_id = alias_map.get(alias)
-            if report_id is None or report_id not in retrieved:
-                incidents["unknown_alias"] += 1
-                continue
-            if allowed_reports.get(report_id) != label:
-                incidents["cross_group_citation"] += 1
-                continue
-            if report_id not in resolved:
-                resolved.append(report_id)
-
-        if len(resolved) > config.COMPARE_CITE_MAX:
-            incidents["cite_over_limit"] += 1
-            resolved = resolved[: config.COMPARE_CITE_MAX]
+        # Fix pack 9 (O2c): a side over its ceiling is dropped, never cut.
+        if len(resolved) > config.COMPARE_CONTRAST_CITE_MAX:
+            incidents["cite_over_limit_dropped"] += 1
+            return None
 
         if not resolved:
             incidents["contrast_invalid"] += 1
             return None
 
-        by_label[label] = CompareContrastSide(
-            label=label, text=text, report_ids=resolved
-        )
+        by_key[key] = CompareContrastSide(label=label, text=text, report_ids=resolved)
 
-    if set(by_label) != set(required_labels):
+    if set(by_key) != set(group_keys):
         incidents["contrast_invalid"] += 1
         return None
 
     return CompareContrast(
-        dimension=dimension, sides=[by_label[label] for label in required_labels]
+        dimension=dimension,
+        sides=[by_key[key] for key in group_keys],
     )
 
 
 def validate_payload(
     payload: Mapping[str, Any],
     *,
-    labels: Sequence[str],
+    group_keys: Mapping[str, str],
     alias_map: Mapping[str, str],
     report_group: Mapping[str, str],
     retrieved: Sequence[str],
@@ -373,14 +395,14 @@ def validate_payload(
     incidents = {
         "unknown_alias": 0,
         "cross_group_citation": 0,
-        "uncited_point_dropped": 0,
+        "point_uncited": 0,
         "unknown_label": 0,
         "malformed_point": 0,
         "empty_point": 0,
         "alias_in_text": 0,
         "report_id_in_text": 0,
         "point_too_long": 0,
-        "cite_over_limit": 0,
+        "cite_over_limit_dropped": 0,
         "points_over_limit": 0,
         "contrast_invalid": 0,
         "contrast_truncated": 0,
@@ -388,20 +410,24 @@ def validate_payload(
         "contrast_text_too_long": 0,
     }
 
-    by_label: Dict[str, List[ComparePoint]] = {label: [] for label in labels}
     raw_groups = payload.get("groups")
-    if not isinstance(raw_groups, list):
-        raise CompareFormatError("The comparison answer has no groups array.")
+    if not isinstance(raw_groups, dict):
+        raise CompareFormatError("The comparison answer has no groups object.")
+    unknown = [key for key in raw_groups if key not in group_keys]
+    if unknown:
+        # Strict output cannot produce an unknown key, so this is a contract
+        # violation and is never rendered (fix pack 9 replaced free labels with
+        # keys, and a key the backend does not know has no label to map to).
+        raise CompareFormatError("The comparison answer has an unknown group key.")
+    missing = [key for key in group_keys if key not in raw_groups]
+    if missing:
+        raise CompareFormatError("The comparison answer is missing a group key.")
 
-    for raw_group in raw_groups:
-        if not isinstance(raw_group, dict):
-            incidents["malformed_point"] += 1
-            continue
-        label = str(raw_group.get("label") or "").strip()
-        if label not in by_label:
-            incidents["unknown_label"] += 1
-            continue
-        raw_points = raw_group.get("points")
+    by_label: Dict[str, List[ComparePoint]] = {
+        label: [] for label in group_keys.values()
+    }
+    for key, label in group_keys.items():
+        raw_points = raw_groups.get(key)
         if not isinstance(raw_points, list):
             incidents["malformed_point"] += 1
             continue
@@ -422,15 +448,6 @@ def validate_payload(
             by_label[label].append(point)
 
     contrasts: List[CompareContrast] = []
-    # Fix pack 8: a contrast must have exactly one side per group that has
-    # documents, each supported by that group's own reports. A free difference
-    # that named one group only could never be validated, so every such point was
-    # dropped. A configured but empty group cannot be one side of a contrast.
-    active_labels = [
-        label
-        for label in labels
-        if any(report_group.get(report_id) == label for report_id in retrieved)
-    ]
     raw_contrasts = payload.get("contrasts")
     if isinstance(raw_contrasts, list):
         for raw_contrast in raw_contrasts:
@@ -439,7 +456,7 @@ def validate_payload(
                 continue
             contrast = _clean_contrast(
                 raw_contrast,
-                required_labels=active_labels,
+                group_keys=group_keys,
                 allowed_reports=report_group,
                 alias_map=alias_map,
                 retrieved=retrieved,
@@ -451,15 +468,21 @@ def validate_payload(
         incidents["contrast_invalid"] += 1
 
     sections = [
-        CompareSection(label=label, points=by_label[label]) for label in labels
+        CompareSection(label=label, points=by_label[label])
+        for label in group_keys.values()
     ]
 
     cited: List[str] = []
+    reports_per_group: Dict[str, int] = {}
     for section in sections:
+        per_group: List[str] = []
         for point in section.points:
             for report_id in point.report_ids:
                 if report_id not in cited:
                     cited.append(report_id)
+                if report_id not in per_group:
+                    per_group.append(report_id)
+        reports_per_group[section.label] = len(per_group)
     for contrast in contrasts:
         for side in contrast.sides:
             for report_id in side.report_ids:
@@ -471,6 +494,7 @@ def validate_payload(
         contrasts=contrasts,
         incidents={key: value for key, value in incidents.items() if value},
         cited_report_ids=cited,
+        reports_cited_per_group=reports_per_group,
     )
 
 
@@ -483,12 +507,24 @@ def _citation(report_ids: Sequence[str]) -> str:
 
 
 def render_answer(
-    validation: CompareValidation, compare_by: Optional[str] = None
+    validation: CompareValidation,
+    compare_by: Optional[str] = None,
+    *,
+    degraded: bool = False,
 ) -> str:
-    """Render validated sections, paired contrasts and their citations."""
+    """
+    Render validated sections, paired contrasts and their citations.
+
+    ``degraded`` is the fix pack 9 fallback after a failed repair retry: only the
+    groups that produced points are rendered, the contrasts are omitted, and a
+    group with documents but no point says the attempt failed instead of claiming
+    there is no evidence.
+    """
     blocks: List[str] = []
 
     for section in validation.sections:
+        if not section.points and not degraded:
+            continue
         lines = [
             config.COMPARE_GROUP_HEADING_TEMPLATE.format(
                 label=config.comparison_display_label(compare_by or "", section.label)
@@ -503,10 +539,10 @@ def render_answer(
                 for point in section.points
             )
         else:
-            lines.append(config.COMPARE_EMPTY_GROUP)
+            lines.append(config.COMPARE_GROUP_EMPTY_RETRY)
         blocks.append(config.COMPARE_LINE_SEPARATOR.join(lines))
 
-    if validation.contrasts:
+    if validation.contrasts and not degraded:
         lines = [config.COMPARE_CONTRASTS_HEADING, ""]
         for index, contrast in enumerate(validation.contrasts):
             if index:

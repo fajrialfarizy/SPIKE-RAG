@@ -119,7 +119,10 @@ class ScriptedCompletions:
     def _kind(kwargs: Dict[str, Any]) -> str:
         response_format = kwargs.get("response_format") or {}
         if response_format.get("type") == "json_schema":
-            return "compare"
+            # Fix pack 9: the free-text answer is structured too, so the schema
+            # name decides which scripted step it draws.
+            name = (response_format.get("json_schema") or {}).get("name")
+            return "answer" if name == config.ANSWER_JSON_SCHEMA_NAME else "compare"
         if response_format.get("type") == "json_object":
             return "analyzer"
         return "answer"
@@ -133,13 +136,13 @@ class ScriptedCompletions:
         step = self.script.pop(0)
         messages = kwargs.get("messages") or []
         content = step.content
+        user_text = "\n".join(
+            item["content"] for item in messages if item["role"] == "user"
+        )
         if content == "__COMPARE__":
-            # Build a valid payload from the aliases the prompt actually lists.
-            user_text = "\n".join(
-                item["content"] for item in messages if item["role"] == "user"
-            )
-            aliases = list(dict.fromkeys(re.findall(r"LAP[0-9]{1,3}", user_text)))
-            content = compare_payload({alias: alias for alias in aliases})
+            content = compare_payload(kwargs, user_text)
+        elif content == "__ANSWER__":
+            content = answer_payload(user_text)
         self.requests.append({
             "kind": kind,
             "max_completion_tokens": kwargs.get("max_completion_tokens"),
@@ -183,32 +186,48 @@ def analyzer_payload(mode: str, compare_by: Optional[str], query: str) -> str:
     })
 
 
-def compare_payload(alias_map: Dict[str, str]) -> str:
-    """A valid structured answer built from whatever aliases the context has."""
-    aliases = list(alias_map)
+def compare_payload(kwargs: Dict[str, Any], user_text: str) -> str:
+    """A valid keyed comparison answer built from the prompt's own aliases."""
+    schema = (kwargs.get("response_format") or {}).get("json_schema", {}).get(
+        "schema", {}
+    )
+    keys = schema.get("properties", {}).get("groups", {}).get("required", [])
 
-    def cite(index: int) -> List[str]:
-        return [aliases[index % len(aliases)]] if aliases else []
+    alias_groups: Dict[str, List[str]] = {}
+    for key in keys:
+        match = re.search(
+            rf"^- {re.escape(key)}: (.+)$", user_text, re.MULTILINE
+        )
+        alias_groups[key] = (
+            re.findall(r"LAP[0-9]{1,3}", match.group(1)) if match else []
+        )
 
-    return json.dumps({
-        "groups": [
-            {
-                "label": "meraih penghargaan",
-                "points": [
-                    {"text": "Tim memperkuat validasi pasar sebelum final.",
-                     "cite": cite(0)},
-                ],
-            },
-            {
-                "label": "belum juara (finalis)",
-                "points": [
-                    {"text": "Tim memperbaiki riset pesaing pada evaluasi berikutnya.",
-                     "cite": cite(1)},
-                ],
-            },
-        ],
-        "contrasts": [],
-    })
+    groups = {}
+    for index, key in enumerate(keys):
+        aliases = alias_groups[key]
+        groups[key] = (
+            [
+                {
+                    "text": f"Tim pada kelompok {index + 1} memperkuat validasi pasar.",
+                    "cite": aliases[:1],
+                }
+            ]
+            if aliases
+            else []
+        )
+    return json.dumps({"groups": groups, "contrasts": []})
+
+
+def answer_payload(user_text: str) -> str:
+    """A valid structured free-text answer citing the prompt's first aliases."""
+    aliases = list(dict.fromkeys(re.findall(r"LAP[0-9]{1,3}", user_text)))
+    points = [
+        {
+            "text": "Tim menghadapi kendala validasi pasar dan waktu terbatas.",
+            "cite": aliases[:1],
+        }
+    ] if aliases else []
+    return json.dumps({"found": bool(points), "points": points})
 
 
 def parse_args(argv: Optional[list] = None) -> argparse.Namespace:
@@ -283,11 +302,11 @@ def install_trace() -> None:
                   f"remaining={self.remaining():.2f}")
             raise
 
-    def traced_reserve(self, tokens, deadline=None):
+    def traced_reserve(self, tokens, max_wait_seconds=None):
         print(f"    [trace] reserve({tokens}) used={self.snapshot()['tokens_used_this_minute']} "
-              f"remaining={None if deadline is None else round(deadline.remaining(), 2)}")
+              f"max_wait={max_wait_seconds}")
         try:
-            entry = original_reserve(self, tokens, deadline)
+            entry = original_reserve(self, tokens, max_wait_seconds)
         except BaseException as exc:
             print(f"    [trace] reserve raised {type(exc).__name__}")
             raise
@@ -356,7 +375,7 @@ def main(argv: Optional[list] = None) -> int:
              analyzer_payload("specific", None, "pengalaman tim kompetisi business plan"),
              prompt_tokens=1177, completion_tokens=ANALYZER_TOTAL_Q1 - 1177,
              latency_seconds=1.0),
-        Step("answer", "Tim menghadapi kendala validasi pasar dan waktu terbatas. [LAP1]",
+        Step("answer", "__ANSWER__",
              prompt_tokens=2922, completion_tokens=ANSWER_TOTAL_Q1 - 2922,
              latency_seconds=5.0),
         Step("analyzer",
