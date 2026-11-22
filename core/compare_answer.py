@@ -19,6 +19,13 @@ model writes no contrast text at all, so the backend renders the VALIDATED point
 text and citations. The real run repeated the group points on the contrast sides
 and added merged claims there.
 
+Fix pack 11 (S1d/S1e): the pick value is a STRING with an enum generated per
+request ("1".."N"), because string+enum is the construct the real model already
+accepted. ``COMPARE_CONTRAST_MODE`` selects the shape by config only: "pick"
+(the default) or "sides" (the fix pack 9 shape, kept because it is known to work
+on the real model). Both modes apply the fix pack 10 dimension rules and the
+citation ceilings, and neither is ever chosen at runtime as a fallback.
+
 The model never writes a heading, a citation, a count or the Sumber block:
 
 - ``build_schema`` returns a Groq Structured Outputs schema (strict mode: every
@@ -133,16 +140,75 @@ def _point_schema() -> Dict[str, Any]:
     }
 
 
+def _pick_value_schema() -> Dict[str, Any]:
+    """One pick value: a STRING number with a documented enum (fix pack 11)."""
+    return {
+        "type": "string",
+        "enum": [
+            config.COMPARE_PICK_NUMBER_TEMPLATE.format(number=number)
+            for number in range(1, config.COMPARE_POINTS_PER_GROUP_MAX + 1)
+        ],
+    }
+
+
 def _pick_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
     return {
         "type": "object",
-        "properties": {key: {"type": "integer"} for key in group_keys},
+        "properties": {key: _pick_value_schema() for key in group_keys},
         "required": list(group_keys),
         "additionalProperties": False,
     }
 
 
-def _contrast_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
+def _side_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
+    """The fix pack 9 side shape, kept selectable through config (fix pack 11)."""
+    return {
+        "type": "object",
+        "properties": {
+            config.COMPARE_CONTRAST_GROUP: {
+                "type": "string",
+                "enum": list(group_keys),
+            },
+            config.COMPARE_CONTRAST_TEXT: {"type": "string"},
+            config.COMPARE_CONTRAST_CITE: {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+        },
+        "required": [
+            config.COMPARE_CONTRAST_GROUP,
+            config.COMPARE_CONTRAST_TEXT,
+            config.COMPARE_CONTRAST_CITE,
+        ],
+        "additionalProperties": False,
+    }
+
+
+def contrast_mode(mode: Optional[str] = None) -> str:
+    """The configured contrast shape, validated loudly (never a fallback)."""
+    value = config.COMPARE_CONTRAST_MODE if mode is None else mode
+    if value not in config.COMPARE_CONTRAST_MODE_VALUES:
+        raise ValueError(
+            f"COMPARE_CONTRAST_MODE '{value}' is not supported; "
+            f"use one of {config.COMPARE_CONTRAST_MODE_VALUES}."
+        )
+    return value
+
+
+def _contrast_schema(group_keys: Sequence[str], mode: str) -> Dict[str, Any]:
+    if mode == "sides":
+        return {
+            "type": "object",
+            "properties": {
+                "dimension": {"type": "string"},
+                config.COMPARE_CONTRAST_SIDES: {
+                    "type": "array",
+                    "items": _side_schema(group_keys),
+                },
+            },
+            "required": ["dimension", config.COMPARE_CONTRAST_SIDES],
+            "additionalProperties": False,
+        }
     return {
         "type": "object",
         "properties": {
@@ -154,9 +220,12 @@ def _contrast_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
     }
 
 
-def build_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
+def build_schema(
+    group_keys: Sequence[str], mode: Optional[str] = None
+) -> Dict[str, Any]:
     """Strict JSON Schema for one comparison answer over the given group keys."""
     keys = list(group_keys)
+    shape = contrast_mode(mode)
     return {
         "type": "object",
         "properties": {
@@ -168,7 +237,7 @@ def build_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
             },
             "contrasts": {
                 "type": "array",
-                "items": _contrast_schema(keys),
+                "items": _contrast_schema(keys, shape),
             },
         },
         "required": ["groups", "contrasts"],
@@ -176,14 +245,16 @@ def build_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
     }
 
 
-def response_format(group_keys: Sequence[str]) -> Dict[str, Any]:
+def response_format(
+    group_keys: Sequence[str], mode: Optional[str] = None
+) -> Dict[str, Any]:
     """The ``response_format`` object Groq expects for strict structured output."""
     return {
         "type": "json_schema",
         "json_schema": {
             "name": config.COMPARE_JSON_SCHEMA_NAME,
             "strict": True,
-            "schema": build_schema(group_keys),
+            "schema": build_schema(group_keys, mode),
         },
     }
 
@@ -332,31 +403,29 @@ def _is_generic_dimension(dimension: str) -> bool:
     return _normalize_dimension(dimension) in _GENERIC_DIMENSIONS
 
 
-def _clean_contrast(
-    raw: Any,
-    *,
-    group_keys: Mapping[str, str],
-    points_by_key: Mapping[str, List[_PointResult]],
-    incidents: Dict[str, int],
-) -> Optional[CompareContrast]:
+def _pick_number(value: Any) -> Optional[int]:
     """
-    One contrast resolved from the model's picks, or None with a reason code.
+    A pick as a 1-based number.
 
-    Every group key must be picked, each pick is a 1-based index into that
-    group's points AS THE MODEL WROTE THEM, and the picked point must have
-    survived validation. A generic or empty dimension is rendered with the
-    neutral label and counted, never dropped.
+    Fix pack 11 (S1d): the schema sends the number as a STRING with an enum,
+    because that is the construct the real model already accepted. The backend
+    still accepts a plain integer from an older payload and validates the range.
     """
-
-    def reject(reason: str) -> None:
-        incidents["contrast_invalid"] += 1
-        key = f"contrast_invalid_{reason}"
-        incidents[key] = incidents.get(key, 0) + 1
-
-    if not isinstance(raw, dict):
-        reject("malformed")
+    if isinstance(value, bool):
         return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            return int(text)
+    return None
 
+
+def _contrast_dimension(
+    raw: Mapping[str, Any], incidents: Dict[str, int]
+) -> str:
+    """The rendered dimension; generic or empty becomes the neutral label."""
     dimension = _clean_text(
         raw.get("dimension"),
         incidents,
@@ -366,7 +435,20 @@ def _clean_contrast(
     normalized = _normalize_dimension(dimension)
     if not normalized or normalized in _GENERIC_DIMENSIONS:
         incidents["generic_dimension"] += 1
-        dimension = config.COMPARE_NEUTRAL_DIMENSION
+        return config.COMPARE_NEUTRAL_DIMENSION
+    return dimension
+
+
+def _contrast_from_pick(
+    raw: Mapping[str, Any],
+    *,
+    group_keys: Mapping[str, str],
+    points_by_key: Mapping[str, List[_PointResult]],
+    incidents: Dict[str, int],
+    reject,
+) -> Optional[CompareContrast]:
+    """One contrast resolved from the model's point numbers."""
+    dimension = _contrast_dimension(raw, incidents)
 
     pick = raw.get(config.COMPARE_CONTRAST_PICK)
     if not isinstance(pick, dict):
@@ -383,8 +465,8 @@ def _clean_contrast(
 
     sides: List[CompareContrastSide] = []
     for key, label in group_keys.items():
-        value = pick.get(key)
-        if isinstance(value, bool) or not isinstance(value, int):
+        value = _pick_number(pick.get(key))
+        if value is None:
             reject("pick_type")
             return None
         results = points_by_key.get(key, [])
@@ -408,6 +490,131 @@ def _clean_contrast(
     return CompareContrast(dimension=dimension, sides=sides)
 
 
+def _contrast_from_sides(
+    raw: Mapping[str, Any],
+    *,
+    group_keys: Mapping[str, str],
+    allowed_reports: Mapping[str, str],
+    alias_map: Mapping[str, str],
+    retrieved: Sequence[str],
+    incidents: Dict[str, int],
+    reject,
+) -> Optional[CompareContrast]:
+    """
+    One contrast in the fix pack 9 shape (fix pack 11, S1e, config only).
+
+    The dimension rules and the citation ceilings are the fix pack 10 ones; only
+    the payload shape differs, so this mode never brings back the old behaviour.
+    """
+    dimension = _contrast_dimension(raw, incidents)
+
+    raw_sides = raw.get(config.COMPARE_CONTRAST_SIDES)
+    if not isinstance(raw_sides, list):
+        reject("sides_malformed")
+        return None
+
+    by_key: Dict[str, CompareContrastSide] = {}
+    for raw_side in raw_sides:
+        if not isinstance(raw_side, dict):
+            reject("side_malformed")
+            return None
+        key = str(raw_side.get(config.COMPARE_CONTRAST_GROUP) or "").strip()
+        if key not in group_keys:
+            reject("side_unknown")
+            return None
+        if key in by_key:
+            reject("side_duplicate")
+            return None
+        label = group_keys[key]
+
+        text = _clean_text(
+            raw_side.get(config.COMPARE_CONTRAST_TEXT),
+            incidents,
+            max_words=config.COMPARE_CONTRAST_TEXT_MAX_WORDS,
+            limit_incident="contrast_text_too_long",
+        )
+        if not text:
+            reject("side_empty")
+            return None
+
+        resolved = _resolve_cites(
+            raw_side.get(config.COMPARE_CONTRAST_CITE),
+            label=label,
+            allowed_reports=allowed_reports,
+            alias_map=alias_map,
+            retrieved=retrieved,
+            incidents=incidents,
+        )
+        if len(resolved) > config.COMPARE_CONTRAST_CITE_MAX:
+            reject("side_cite_over_limit")
+            return None
+        if len(resolved) < config.COMPARE_CITE_MIN:
+            reject("side_uncited")
+            return None
+
+        by_key[key] = CompareContrastSide(
+            label=label, text=text, report_ids=resolved
+        )
+
+    if set(by_key) != set(group_keys):
+        reject("side_missing")
+        return None
+
+    return CompareContrast(
+        dimension=dimension,
+        sides=[by_key[key] for key in group_keys],
+    )
+
+
+def _clean_contrast(
+    raw: Any,
+    *,
+    group_keys: Mapping[str, str],
+    points_by_key: Mapping[str, List[_PointResult]],
+    allowed_reports: Mapping[str, str],
+    alias_map: Mapping[str, str],
+    retrieved: Sequence[str],
+    incidents: Dict[str, int],
+    mode: str = "pick",
+) -> Optional[CompareContrast]:
+    """
+    One contrast, or None with a reason code.
+
+    In "pick" mode every group key must be picked, each pick is a 1-based index
+    into that group's points AS THE MODEL WROTE THEM, and the picked point must
+    have survived validation. In "sides" mode every group key must supply exactly
+    one cited side. A generic or empty dimension is rendered with the neutral
+    label and counted in both modes, never dropped.
+    """
+
+    def reject(reason: str) -> None:
+        incidents["contrast_invalid"] += 1
+        key = f"contrast_invalid_{reason}"
+        incidents[key] = incidents.get(key, 0) + 1
+
+    if not isinstance(raw, dict):
+        reject("malformed")
+        return None
+
+    if contrast_mode(mode) == "sides":
+        return _contrast_from_sides(
+            raw,
+            group_keys=group_keys,
+            allowed_reports=allowed_reports,
+            alias_map=alias_map,
+            retrieved=retrieved,
+            incidents=incidents,
+            reject=reject,
+        )
+    return _contrast_from_pick(
+        raw,
+        group_keys=group_keys,
+        points_by_key=points_by_key,
+        incidents=incidents,
+        reject=reject,
+    )
+
+
 def validate_payload(
     payload: Mapping[str, Any],
     *,
@@ -415,8 +622,10 @@ def validate_payload(
     alias_map: Mapping[str, str],
     report_group: Mapping[str, str],
     retrieved: Sequence[str],
+    mode: Optional[str] = None,
 ) -> CompareValidation:
     """Validate every group, point and citation; never render unvalidated text."""
+    shape = contrast_mode(mode)
     incidents = {
         "unknown_alias": 0,
         "cross_group_citation": 0,
@@ -433,6 +642,7 @@ def validate_payload(
         "contrast_truncated": 0,
         "dimension_too_long": 0,
         "generic_dimension": 0,
+        "contrast_text_too_long": 0,
     }
 
     raw_groups = payload.get("groups")
@@ -493,7 +703,11 @@ def validate_payload(
                 raw_contrast,
                 group_keys=group_keys,
                 points_by_key=points_by_key,
+                allowed_reports=report_group,
+                alias_map=alias_map,
+                retrieved=retrieved,
                 incidents=incidents,
+                mode=shape,
             )
             if contrast is not None:
                 contrasts.append(contrast)

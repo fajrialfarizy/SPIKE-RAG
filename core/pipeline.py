@@ -49,7 +49,12 @@ from core.guardrails import (
     detect_instruction_override,
     detect_privacy_request,
 )
-from core.llm_client import LLMClient, LLMError, LLMRateLimitError
+from core.llm_client import (
+    LLMClient,
+    LLMError,
+    LLMRateLimitError,
+    LLMRequestError,
+)
 from core.negation import negation_sentences, point_negation_counts
 from core.tokens import EstimatorTokenCounter
 from core.retriever import Retriever, RetrievedChunk
@@ -134,6 +139,9 @@ class DebugInfo:
     support: Dict[str, Any] = field(default_factory=dict)
     # Fix pack 10 (R4): distinct reports the final answer cites, every mode.
     reports_cited: int = 0
+    # Fix pack 11 (S1a): sanitized provider detail for a rejected request. The
+    # body is developer-only: never shown to a user, never written to a log.
+    provider_error: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -175,6 +183,7 @@ class DebugInfo:
             "wording": self.wording,
             "support": self.support,
             "reports_cited": self.reports_cited,
+            "provider_error": self.provider_error,
         }
 
 
@@ -362,6 +371,7 @@ class RagPipeline:
             "compare_points": {},
             "wording": {},
             "support": {},
+            "provider_error": {},
             "post_phases": {},
         }
 
@@ -435,6 +445,7 @@ class RagPipeline:
                 wording=dict(state["wording"]),
                 support=dict(state["support"]),
                 reports_cited=len(dict.fromkeys(cited or [])),
+                provider_error=dict(state.get("provider_error") or {}),
             )
             logger.info(
                 "chat_request status=%s mode=%s route=%s chunks=%d latency_ms=%.1f "
@@ -506,7 +517,12 @@ class RagPipeline:
 
             # 4. Analyzer.
             deadline.require_remaining()
-            analysis = self.analyzer.analyze(text, deadline=deadline)
+            try:
+                analysis = self.analyzer.analyze(text, deadline=deadline)
+            except LLMError as exc:
+                # Fix pack 11 (S2b): a failed analyzer call is reported too.
+                self._record_failed_call(state, "analyzer", exc)
+                raise
             state["mode"] = analysis.mode.value
             state["filters"] = analysis.filters
             state["used_fallback"] = analysis.used_fallback
@@ -622,6 +638,22 @@ class RagPipeline:
                 else prompts.RATE_LIMITED_RESPONSE,
                 error_type=type(exc).__name__,
                 retry_after_seconds=exc.retry_after_seconds,
+            )
+        except LLMRequestError as exc:
+            # Fix pack 11 (S2d): a request-level rejection is an invalid request,
+            # never a transient failure. Nothing is retried, the sanitized
+            # provider detail is debug-only, and the incident is counted.
+            state["provider_error"] = dict(exc.provider_error)
+            status = getattr(exc, "http_status", None)
+            incident = f"provider_{status}" if status else "provider_request"
+            state["incidents"][incident] = state["incidents"].get(incident, 0) + 1
+            logger.warning(
+                "chat_failed error_type=invalid_request status=%s", status
+            )
+            return result(
+                AnswerStatus.TECHNICAL_ERROR,
+                prompts.TECHNICAL_ERROR_RESPONSE,
+                error_type="invalid_request",
             )
         except DeadlineExceeded as exc:
             logger.warning("chat_failed error_type=DeadlineExceeded")
@@ -791,6 +823,29 @@ class RagPipeline:
                 active = [label for label in active if label in requested]
         return active
 
+    @staticmethod
+    def _record_failed_call(
+        state: Dict[str, Any], name: str, exc: BaseException
+    ) -> None:
+        """
+        Fix pack 11 (S2b): a failed call is reported like any other call.
+
+        The client attaches its metrics to the exception, so the smoke run can
+        see the queue wait, the attempt count, the HTTP status and whether the
+        token reservation was released, instead of a missing model call.
+        """
+        metrics = getattr(exc, "call_metrics", None)
+        if not metrics:
+            return
+        state["calls"].append({"name": name, **dict(metrics)})
+        logger.info(
+            "llm_call_recorded name=%s error_type=%s status=%s reservation=%s",
+            name,
+            metrics.get("error_type"),
+            metrics.get("http_status"),
+            metrics.get("reservation_outcome"),
+        )
+
     def _compare_call(
         self,
         state: Dict[str, Any],
@@ -803,20 +858,25 @@ class RagPipeline:
         repair: bool = False,
     ):
         """One structured comparison call, through the same limiter as always."""
-        response_format = compare_answer.response_format(list(group_keys))
-        completion = self.llm.complete(
-            prompts.SYSTEM_PROMPT_COMPARE,
-            user_prompt,
-            temperature=config.LLM_TEMPERATURE_CHAT,
-            max_tokens=config.LLM_MAX_OUTPUT_TOKENS_COMPARE,
-            reasoning_effort=self.answer_reasoning_effort,
-            json_mode=True,
-            response_format=response_format,
-            deadline=deadline,
-            queue_max_wait_seconds=(
-                config.QUEUE_MAX_WAIT_RETRY_SECONDS if repair else None
-            ),
-        )
+        mode = compare_answer.contrast_mode()
+        response_format = compare_answer.response_format(list(group_keys), mode)
+        try:
+            completion = self.llm.complete(
+                prompts.SYSTEM_PROMPT_COMPARE,
+                user_prompt,
+                temperature=config.LLM_TEMPERATURE_CHAT,
+                max_tokens=config.LLM_MAX_OUTPUT_TOKENS_COMPARE,
+                reasoning_effort=self.answer_reasoning_effort,
+                json_mode=True,
+                response_format=response_format,
+                deadline=deadline,
+                queue_max_wait_seconds=(
+                    config.QUEUE_MAX_WAIT_RETRY_SECONDS if repair else None
+                ),
+            )
+        except LLMError as exc:
+            self._record_failed_call(state, name, exc)
+            raise
         state["calls"].append(completion.to_metrics(name))
         state["raw_answers"].append(self._raw_answer(attempt, completion))
         return completion
@@ -835,6 +895,7 @@ class RagPipeline:
             alias_map=bundle.alias_map,
             report_group=report_group,
             retrieved=list(bundle.report_metadata),
+            mode=compare_answer.contrast_mode(),
         )
 
     def _compare_repair(
@@ -875,6 +936,9 @@ class RagPipeline:
             state["incidents"]["repair_unavailable"] = 1
             state["retry_after_seconds"] = getattr(exc, "retry_after_seconds", None)
             return None
+        except LLMRequestError:
+            # A rejected request is not a transient failure: surface it.
+            raise
         except LLMError:
             state["incidents"]["repair_failed"] = 1
             return None
@@ -1032,7 +1096,7 @@ class RagPipeline:
             state,
             answer_text,
             [
-                {"text": point.text, "report_ids": point.report_ids}
+                (point.text, list(point.report_ids))
                 for section in validation.sections
                 for point in section.points
             ],
@@ -1070,19 +1134,23 @@ class RagPipeline:
         repair: bool = False,
     ):
         """One structured free-text call through the normal limiter path."""
-        completion = self.llm.complete(
-            prompts.SYSTEM_PROMPT_STRUCTURED,
-            user_prompt,
-            temperature=config.LLM_TEMPERATURE_CHAT,
-            max_tokens=config.LLM_MAX_OUTPUT_TOKENS_FREE,
-            reasoning_effort=self.answer_reasoning_effort,
-            json_mode=True,
-            response_format=structured_answer.response_format(),
-            deadline=deadline,
-            queue_max_wait_seconds=(
-                config.QUEUE_MAX_WAIT_RETRY_SECONDS if repair else None
-            ),
-        )
+        try:
+            completion = self.llm.complete(
+                prompts.SYSTEM_PROMPT_STRUCTURED,
+                user_prompt,
+                temperature=config.LLM_TEMPERATURE_CHAT,
+                max_tokens=config.LLM_MAX_OUTPUT_TOKENS_FREE,
+                reasoning_effort=self.answer_reasoning_effort,
+                json_mode=True,
+                response_format=structured_answer.response_format(),
+                deadline=deadline,
+                queue_max_wait_seconds=(
+                    config.QUEUE_MAX_WAIT_RETRY_SECONDS if repair else None
+                ),
+            )
+        except LLMError as exc:
+            self._record_failed_call(state, name, exc)
+            raise
         state["calls"].append(completion.to_metrics(name))
         state["raw_answers"].append(self._raw_answer(attempt, completion))
         return completion
@@ -1178,6 +1246,8 @@ class RagPipeline:
                     error_type=type(exc).__name__,
                     retry_after_seconds=getattr(exc, "retry_after_seconds", None),
                 )
+            except LLMRequestError:
+                raise
             except LLMError:
                 state["incidents"]["repair_failed"] = 1
                 return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
@@ -1225,7 +1295,7 @@ class RagPipeline:
             state,
             answer_text,
             [
-                {"text": point.text, "report_ids": point.report_ids}
+                (point.text, list(point.report_ids))
                 for point in validation.points
             ],
             chunks,

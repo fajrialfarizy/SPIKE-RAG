@@ -1,5 +1,5 @@
 """
-Non-blocking wording metrics (fix pack 10, R3b).
+Non-blocking wording metrics (fix pack 10, R3b; support metric fixed in 11, S3).
 
 The real run showed two failure shapes that no rule can decide reliably:
 
@@ -23,6 +23,15 @@ verb-strength error (the words are all in the source) or an invented causal link
 (the words are too), and a faithful paraphrase can score low because it uses
 different words. It exists to point a human rater at the suspicious points in
 Phase 4; nothing here is a guardrail.
+
+Fix pack 11 (S3): ``support_overlap`` used to unpack its arguments with
+``for text, report_ids in points``. The pipeline passed dicts, so the unpacking
+yielded the two dict KEYS ("text" and "report_ids") and the report-id argument
+became the characters of the string "report_ids". Every point then scored 0.0
+and a correct answer looked unsupported. The function now requires real
+``(text, report_ids)`` pairs and refuses anything else loudly, and a point whose
+cited reports contributed no retrieved text is reported as
+``cited_text_missing`` instead of as weak support.
 
 Samples stay in the debug object. They are never logged, never written to a file
 and never shown to a student.
@@ -83,6 +92,34 @@ def _content_words(text: str) -> set:
     return {word for word in words if word not in config.SUPPORT_STOPWORDS}
 
 
+def _check_points(points: Any) -> List[Tuple[str, List[str]]]:
+    """
+    One ``(text, report ids)`` pair per point, or a loud TypeError.
+
+    A dict here is a programming error, not an empty citation list: unpacking it
+    silently turned the field NAME into the cited report id (fix pack 11, S3).
+    """
+    checked: List[Tuple[str, List[str]]] = []
+    for item in points:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            raise TypeError(
+                "support_overlap expects (text, report_ids) pairs, "
+                f"got {type(item).__name__}"
+            )
+        text, report_ids = item
+        if not isinstance(text, str):
+            raise TypeError("support_overlap expects the point text as a string")
+        if isinstance(report_ids, str) or not isinstance(
+            report_ids, (list, tuple)
+        ):
+            raise TypeError(
+                "support_overlap expects report_ids as a list of report ids, "
+                f"got {type(report_ids).__name__}"
+            )
+        checked.append((text, [str(report_id) for report_id in report_ids]))
+    return checked
+
+
 def support_overlap(
     points: Sequence[Tuple[str, Sequence[str]]],
     report_texts: Mapping[str, str],
@@ -91,14 +128,16 @@ def support_overlap(
     Lexical overlap between each point and the reports it cites (non-blocking).
 
     ``points`` holds ``(text, report_ids)`` in render order; ``report_texts``
-    maps a report id to the text of its retrieved chunks. A point with no cited
-    report text scores 0.0, and a point with no content words is skipped rather
-    than scored.
+    maps a report id to the text of its retrieved chunks. A point with no content
+    words is skipped rather than scored. A point whose cited reports have no
+    retrieved text is flagged ``cited_text_missing`` and is NOT counted as low
+    support: nothing was available to compare it with.
     """
     per_point: List[Dict[str, Any]] = []
     overlaps: List[float] = []
     low = 0
-    for text, report_ids in points:
+    missing = 0
+    for text, report_ids in _check_points(points):
         content = _content_words(text)
         if not content:
             per_point.append(
@@ -107,12 +146,28 @@ def support_overlap(
                     "report_ids": list(report_ids),
                     "overlap": None,
                     "low_support": False,
+                    "cited_text_missing": False,
                 }
             )
             continue
-        source = _content_words(
-            " ".join(report_texts.get(report_id, "") for report_id in report_ids)
-        )
+
+        source_text = " ".join(
+            report_texts.get(report_id, "") for report_id in report_ids
+        ).strip()
+        if not source_text:
+            missing += 1
+            per_point.append(
+                {
+                    "text": text,
+                    "report_ids": list(report_ids),
+                    "overlap": None,
+                    "low_support": False,
+                    "cited_text_missing": True,
+                }
+            )
+            continue
+
+        source = _content_words(source_text)
         overlap = len(content & source) / len(content)
         is_low = overlap < config.SUPPORT_OVERLAP_MIN
         overlaps.append(overlap)
@@ -124,14 +179,17 @@ def support_overlap(
                 "report_ids": list(report_ids),
                 "overlap": round(overlap, 3),
                 "low_support": is_low,
+                "cited_text_missing": False,
             }
         )
 
     low_points = [item for item in per_point if item["low_support"]]
+    missing_points = [item for item in per_point if item["cited_text_missing"]]
     return {
         "threshold": config.SUPPORT_OVERLAP_MIN,
         "minimum": round(min(overlaps), 3) if overlaps else None,
         "low_support_points": low,
+        "cited_text_missing_points": missing,
         "samples": [
             {
                 "report_ids": item["report_ids"],
@@ -139,6 +197,13 @@ def support_overlap(
                 "text": item["text"][: config.SUPPORT_SAMPLE_TEXT_CHARS],
             }
             for item in low_points[: config.SUPPORT_SAMPLE_LIMIT]
+        ],
+        "missing_samples": [
+            {
+                "report_ids": item["report_ids"],
+                "text": item["text"][: config.SUPPORT_SAMPLE_TEXT_CHARS],
+            }
+            for item in missing_points[: config.SUPPORT_SAMPLE_LIMIT]
         ],
         "per_point": per_point,
     }
