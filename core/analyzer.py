@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import config
 from core import prompts
 from core.deadline import Deadline, DeadlineExceeded
-from core.llm_client import LLMClient, LLMError, LLMRateLimitError
+from core.llm_client import LLMClient, LLMError, LLMRateLimitError, LLMRequestError
 from enums import AchievementLevel, CompetitionType, QueryMode
 
 logger = logging.getLogger("core_analyzer")
@@ -411,9 +411,12 @@ class Analyzer:
                 json_mode=True,
                 deadline=deadline,
             )
-        except (DeadlineExceeded, LLMRateLimitError):
+        except (DeadlineExceeded, LLMRateLimitError, LLMRequestError):
             # A budget or allowance problem affects the whole question; a silent
             # fallback would only spend another call that is certain to fail.
+            # Fix pack 11 (S2d): a rejected request is a contract problem too, so
+            # it is surfaced as invalid_request instead of being hidden by a
+            # fallback that would send the same rejected request again.
             raise
         except LLMError:
             return fallback_result(question, reason="llm_error")

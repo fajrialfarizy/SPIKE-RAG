@@ -377,6 +377,13 @@ LLM_ANALYZER_MAX_OUTPUT_TOKENS = 400
 LLM_JSON_MODE_ENABLED = True
 LLM_JSON_RESPONSE_FORMAT = {"type": "json_object"}
 LLM_RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
+# Fix pack 11 (S1a/S2d): a non-retryable 4xx is a request rejection, not a
+# transient failure. The provider's error body is parsed for diagnosis, but only
+# the documented fields are kept and the message is dropped when it echoes the
+# request. These statuses are reported as error_type=invalid_request.
+LLM_NON_RETRYABLE_REQUEST_STATUSES = (400, 401, 403, 404, 413, 422)
+LLM_PROVIDER_ERROR_MAX_CHARS = 500
+LLM_PROVIDER_ERROR_ECHO_WINDOW_CHARS = 40
 LLM_RETRY_BASE_DELAY_SECONDS = 1.0
 LLM_RETRY_MAX_DELAY_SECONDS = 8.0
 # A rate-limit reset beyond this is treated as a daily window: waiting can never
@@ -881,6 +888,20 @@ COMPARE_POINT_MAX_WORDS = 40
 COMPARE_DIMENSION_MAX_WORDS = 6
 COMPARE_CITE_MIN = 1
 COMPARE_CITE_MAX = 2
+# Fix pack 11 (S1e): the contrast shape is a configuration choice, never a
+# runtime fallback. "pick" is the fix pack 10 shape (a number per group);
+# "sides" is the fix pack 9 shape (one {group, text, cite} side per group), which
+# is known to have worked on the real model. Both keep the fix pack 10 dimension
+# rules and the citation ceilings.
+COMPARE_CONTRAST_MODE = "pick"
+COMPARE_CONTRAST_MODE_VALUES = ("pick", "sides")
+COMPARE_CONTRAST_SIDES = "sides"
+COMPARE_CONTRAST_GROUP = "group"
+COMPARE_CONTRAST_TEXT = "text"
+COMPARE_CONTRAST_CITE = "cite"
+# Only the "sides" mode carries its own text, so only it needs these ceilings.
+COMPARE_CONTRAST_TEXT_MAX_WORDS = 30
+COMPARE_CONTRAST_CITE_MAX = 2
 # Fix pack 10 (R2d): the model picks a contrast by NUMBER (see
 # COMPARE_CONTRAST_PICK), so the backend renders the validated point text and the
 # validated citations. A contrast never carries text of its own, which removes
@@ -908,6 +929,11 @@ COMPARE_GROUP_KEY_LINE = "- {key} = {label}"
 # as the model wrote those points. The backend maps the number to the validated
 # point and drops the contrast when that point did not survive validation.
 COMPARE_CONTRAST_PICK = "pick"
+# Fix pack 11 (S1d): the pick values are STRINGS with an enum generated per
+# request ("1".."N"), not open integers. String+enum is the one construct the
+# real model already accepted in the fix pack 9 schema, and the backend parses
+# the number and validates its range, so no undocumented keyword is needed.
+COMPARE_PICK_NUMBER_TEMPLATE = "{number}"
 # Fix pack 8: the backend writes the group heading in bold, followed by a blank
 # line, so a group name reads as a heading instead of a stray prose line.
 COMPARE_GROUP_HEADING_TEMPLATE = "**{label}**"
@@ -1074,6 +1100,10 @@ SUPPORT_STOPWORDS = (
     "untuk",
 )
 SUPPORT_SAMPLE_LIMIT = 5
+# Fix pack 11 (S3): a point whose cited reports contributed no retrieved text is
+# reported separately from a low-overlap point, so a reporting bug (or a point
+# citing an unresolvable report) is never mistaken for weak support.
+SUPPORT_CITED_TEXT_MISSING = "cited_text_missing"
 # A debug sample keeps this many characters of the point it flags.
 SUPPORT_SAMPLE_TEXT_CHARS = 160
 

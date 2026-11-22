@@ -128,6 +128,9 @@ class TokenAwareRateLimiter:
 
         self._provider_tpm_remaining: Optional[int] = None
         self._provider_tpm_reset: Optional[float] = None
+        # Fix pack 11 (S2c): the clamp must expire with the reset the provider
+        # reported, otherwise one header pins the capacity forever.
+        self._provider_tpm_reset_at: Optional[float] = None
         self._provider_rpd_remaining: Optional[int] = None
 
         self.waits = 0
@@ -191,12 +194,29 @@ class TokenAwareRateLimiter:
     def _minute_tokens(self) -> int:
         return sum(int(entry[1]) for entry in self._minute)
 
+    def _provider_capacity(self, now: float) -> Optional[int]:
+        """The provider's remaining tokens, or None once its reset has passed."""
+        if self._provider_tpm_remaining is None:
+            return None
+        if (
+            self._provider_tpm_reset_at is not None
+            and now >= self._provider_tpm_reset_at
+        ):
+            # The provider's own window has reset: the old remaining value says
+            # nothing about the window we are in now.
+            self._provider_tpm_remaining = None
+            self._provider_tpm_reset = None
+            self._provider_tpm_reset_at = None
+            return None
+        return self._provider_tpm_remaining
+
     def _minute_wait(self, now: float, tokens: int) -> float:
         """Seconds to wait before ``tokens`` fit the minute window (0 = fits)."""
         used = self._minute_tokens()
         capacity = self.tokens_per_minute
-        if self._provider_tpm_remaining is not None:
-            capacity = min(capacity, self._provider_tpm_remaining + used)
+        provider_remaining = self._provider_capacity(now)
+        if provider_remaining is not None:
+            capacity = min(capacity, provider_remaining + used)
         wait_tokens = 0.0
         if used + tokens > capacity:
             needed = used + tokens - capacity
@@ -336,8 +356,12 @@ class TokenAwareRateLimiter:
             remaining_tokens = _integer_header(headers, "x-ratelimit-remaining-tokens")
             reset_tokens = _seconds_header(headers, "x-ratelimit-reset-tokens")
             if remaining_tokens is not None:
+                now = self._clock()
                 self._provider_tpm_remaining = max(0, remaining_tokens)
                 self._provider_tpm_reset = reset_tokens
+                self._provider_tpm_reset_at = (
+                    None if reset_tokens is None else now + reset_tokens
+                )
 
             remaining_requests = _integer_header(
                 headers, "x-ratelimit-remaining-requests"

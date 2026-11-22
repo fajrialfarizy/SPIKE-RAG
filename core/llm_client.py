@@ -19,6 +19,11 @@ authoritative wait time. Request counters are per day, token counters per minute
 Retry policy (owned here; the SDK's own retries are disabled):
 - 429 with ``retry-after``: honour the header, bounded by the remaining pipeline
   deadline. If the wait cannot fit the budget, fail fast instead of retrying.
+- Fix pack 11: a non-retryable 4xx is a request rejection (``LLMRequestError``,
+  reported as ``error_type=invalid_request``) and releases its token
+  reservation. A 429 also releases it, because the provider's own headers are
+  authoritative for that window. A 5xx, timeout or connection failure keeps the
+  estimate in the window, because the request may have been served.
 - 429 with a daily-style reset (no header, or a reset far beyond one minute):
   fail fast, because waiting a few seconds cannot help.
 - Otherwise: the exponential backoff from config.
@@ -83,6 +88,34 @@ class LLMRateLimitError(LLMUnavailableError):
 
 class LLMResponseError(LLMError):
     """Raised when the provider returns an unusable payload."""
+
+
+class LLMRequestError(LLMUnavailableError):
+    """
+    Raised when the provider rejects the request itself (fix pack 11, S1a).
+
+    A non-retryable 4xx is a contract problem (a schema the provider will not
+    accept, a bad parameter), never a transient failure, so it is never retried
+    and the pipeline reports ``error_type=invalid_request``.
+
+    ``provider_error`` holds only the documented error fields (type, code, param
+    and a truncated message), and the message is dropped when it could echo the
+    request. The value is developer-only: it is never shown to a user and never
+    written to a log line.
+    """
+
+    error_type = "invalid_request"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: Optional[int] = None,
+        provider_error: Optional[Mapping[str, Any]] = None,
+    ):
+        super().__init__(message)
+        self.http_status = http_status
+        self.provider_error = dict(provider_error or {})
 
 
 @dataclass(frozen=True)
@@ -256,6 +289,96 @@ def _int_field(obj: Any, name: str) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _echoes_request(message: str, request_texts: Mapping[str, str]) -> bool:
+    """
+    True when the provider message repeats a span of the request itself.
+
+    A strict-schema 400 often quotes the offending schema fragment, but a
+    provider could also echo prompt or question text. Any shared window of
+    ``LLM_PROVIDER_ERROR_ECHO_WINDOW_CHARS`` characters is treated as an echo,
+    which is a deliberate over-approximation: dropping a message is harmless,
+    leaking one is not.
+    """
+    text = (message or "").strip()
+    width = int(config.LLM_PROVIDER_ERROR_ECHO_WINDOW_CHARS)
+    if len(text) < width:
+        return False
+    for request_text in request_texts.values():
+        source = request_text or ""
+        for start in range(0, len(source) - width + 1, width // 2):
+            if source[start : start + width] in text:
+                return True
+    return False
+
+
+def _response_body(exc: BaseException) -> Dict[str, Any]:
+    """The provider's parsed JSON error body, or an empty dict."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        return body
+    if isinstance(body, str):
+        try:
+            parsed = json.loads(body)
+        except (TypeError, ValueError):
+            parsed = None
+        return parsed if isinstance(parsed, dict) else {}
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            parsed = response.json()
+        except Exception:  # noqa: BLE001 - a body is optional evidence
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+
+    text = str(exc)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            parsed = json.loads(text[start : end + 1])
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _provider_error_fields(
+    exc: BaseException, request_texts: Mapping[str, str]
+) -> Dict[str, Any]:
+    """
+    The documented error fields only, truncated and sanitized (S1a).
+
+    ``type``, ``code`` and ``param`` are provider-defined tokens, so they are
+    always kept. ``message`` is free text: it is kept only when it does not echo
+    the request, and it is truncated to the configured length.
+    """
+    payload = _response_body(exc)
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        error = payload
+
+    fields: Dict[str, Any] = {}
+    for key in ("type", "code", "param"):
+        value = error.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False)
+        fields[key] = str(value)[: config.LLM_PROVIDER_ERROR_MAX_CHARS]
+
+    message = error.get("message")
+    if message is not None:
+        message = str(message)
+        if _echoes_request(message, request_texts):
+            fields["message_suppressed"] = "echoes_request_content"
+        else:
+            fields["message"] = message[: config.LLM_PROVIDER_ERROR_MAX_CHARS]
+    return fields
 
 
 def _duration_seconds(value: Any) -> Optional[float]:
@@ -592,6 +715,27 @@ class GroqLLMClient(LLMClient):
         queue_wait_ms = 0.0
         model_latency_ms = 0.0
 
+        def failure_metrics(
+            reason: str,
+            status: Optional[int],
+            attempt: int,
+            reservation_info: Mapping[str, Any],
+            outcome: str,
+        ) -> Dict[str, Any]:
+            """Fix pack 11 (S2b): a failed call reports the same metrics as a good one."""
+            return {
+                "latency_ms": round((self._clock() - started) * 1000.0, 1),
+                "queue_wait_ms": round(queue_wait_ms, 1),
+                "model_latency_ms": round(model_latency_ms, 1),
+                "attempts": attempt,
+                "usage": TokenUsage().to_dict(),
+                "finish_reason": None,
+                "error_type": reason,
+                "http_status": status,
+                "reservation_outcome": outcome,
+                "reservation": {**dict(reservation_info), "outcome": outcome},
+            }
+
         for attempt in range(1, max_attempts + 1):
             wait_started = self._clock()
             tokens_before = self.token_limiter.snapshot()["tokens_used_this_minute"]
@@ -655,31 +799,85 @@ class GroqLLMClient(LLMClient):
                     model_latency_ms=model_latency_ms,
                     reservation=reservation_info,
                 )
-            except LLMError:
-                self.token_limiter.release(reservation)
+            except LLMError as exc:
+                # The provider answered with an unusable payload: the tokens were
+                # served, so the estimate stays in the window (fix pack 11, S2a).
+                exc.call_metrics = failure_metrics(
+                    "unusable_response",
+                    self._status_code(exc),
+                    attempt,
+                    reservation_info,
+                    "kept_estimate",
+                )
                 raise
-            except DeadlineExceeded:
-                self.token_limiter.release(reservation)
+            except DeadlineExceeded as exc:
+                # A timed-out request may still have been served; keep the
+                # estimate so a retry cannot over-spend the window (S2a).
+                exc.call_metrics = failure_metrics(
+                    "deadline", None, attempt, reservation_info, "kept_estimate"
+                )
                 raise
             except Exception as exc:
-                # No usage was reported for this attempt; the reservation is
-                # released instead of counting tokens that were never billed.
-                self.token_limiter.release(reservation)
                 retryable, reason = self._classify_error(exc)
+                status = self._status_code(exc)
                 headers = self._response_headers(exc)
                 self.token_limiter.observe_headers(headers)
                 retry_after = _duration_seconds(headers.get("retry-after"))
-                is_rate_limited = self._status_code(exc) == 429 or reason == "http_429"
+                is_rate_limited = status == 429 or reason == "http_429"
+
+                # Fix pack 11 (S2a) reservation policy:
+                # - a non-retryable 4xx never used the allowance -> release,
+                # - a 429 is an explicit rejection before generation and its
+                #   response already carries the authoritative window headers
+                #   (read by observe_headers); keeping our own estimate would
+                #   double-count and can block the very retry the provider asked
+                #   for, so it is released too,
+                # - a 5xx, a timeout or a connection failure may have been served
+                #   and reports nothing, so the estimate is KEPT until it ages out
+                #   of the minute window; a retry must not over-spend.
+                if retryable and not is_rate_limited:
+                    outcome = "kept"
+                else:
+                    self.token_limiter.release(reservation)
+                    outcome = "released"
+                metrics = failure_metrics(
+                    reason, status, attempt, reservation_info, outcome
+                )
+
+                def fail(error: LLMError) -> LLMError:
+                    error.call_metrics = metrics
+                    return error
 
                 if not retryable:
                     logger.warning(
-                        "llm_call_failed attempt=%d/%d error=%s retryable=false",
+                        "llm_call_failed attempt=%d/%d error=%s retryable=false "
+                        "status=%s",
                         attempt,
                         max_attempts,
                         reason,
+                        status,
                     )
-                    raise LLMUnavailableError(
-                        f"LLM request failed ({reason}); it is not retryable."
+                    if status in config.LLM_NON_RETRYABLE_REQUEST_STATUSES:
+                        # Fix pack 11 (S2d): a request-level rejection is not a
+                        # transient error. The body is parsed for developers
+                        # only; the log line keeps the status and the reason.
+                        raise fail(
+                            LLMRequestError(
+                                f"LLM request was rejected ({reason}).",
+                                http_status=status,
+                                provider_error=_provider_error_fields(
+                                    exc,
+                                    {
+                                        "system": system_prompt,
+                                        "user": user_prompt,
+                                    },
+                                ),
+                            )
+                        ) from exc
+                    raise fail(
+                        LLMUnavailableError(
+                            f"LLM request failed ({reason}); it is not retryable."
+                        )
                     ) from exc
 
                 if is_rate_limited:
@@ -698,18 +896,24 @@ class GroqLLMClient(LLMClient):
                                 remaining,
                                 daily,
                             )
-                            raise LLMRateLimitError(
-                                "The provider asked for a wait longer than the "
-                                "remaining pipeline budget.",
-                                retry_after_seconds=retry_after,
-                                is_daily_limit=daily
-                                or retry_after > config.LLM_DAILY_LIMIT_MIN_RESET_SECONDS,
+                            raise fail(
+                                LLMRateLimitError(
+                                    "The provider asked for a wait longer than the "
+                                    "remaining pipeline budget.",
+                                    retry_after_seconds=retry_after,
+                                    is_daily_limit=daily
+                                    or retry_after
+                                    > config.LLM_DAILY_LIMIT_MIN_RESET_SECONDS,
+                                )
                             ) from exc
                         if attempt == max_attempts:
-                            raise LLMRateLimitError(
-                                f"LLM request was rate limited after {attempt} attempts.",
-                                retry_after_seconds=retry_after,
-                                is_daily_limit=daily,
+                            raise fail(
+                                LLMRateLimitError(
+                                    f"LLM request was rate limited after {attempt} "
+                                    "attempts.",
+                                    retry_after_seconds=retry_after,
+                                    is_daily_limit=daily,
+                                )
                             ) from exc
                         logger.warning(
                             "llm_rate_limited_retry attempt=%d/%d retry_after=%.1fs",
@@ -727,9 +931,11 @@ class GroqLLMClient(LLMClient):
                         logger.warning(
                             "llm_rate_limited_fast_fail daily=true attempt=%d", attempt
                         )
-                        raise LLMRateLimitError(
-                            "The provider's daily request allowance is exhausted.",
-                            is_daily_limit=True,
+                        raise fail(
+                            LLMRateLimitError(
+                                "The provider's daily request allowance is exhausted.",
+                                is_daily_limit=True,
+                            )
                         ) from exc
 
                 if attempt == max_attempts:
@@ -740,13 +946,18 @@ class GroqLLMClient(LLMClient):
                         reason,
                     )
                     if is_rate_limited:
-                        raise LLMRateLimitError(
-                            f"LLM request was rate limited after {attempt} attempts.",
-                            retry_after_seconds=retry_after,
-                            is_daily_limit=self._is_daily_limit(headers),
+                        raise fail(
+                            LLMRateLimitError(
+                                f"LLM request was rate limited after {attempt} "
+                                "attempts.",
+                                retry_after_seconds=retry_after,
+                                is_daily_limit=self._is_daily_limit(headers),
+                            )
                         ) from exc
-                    raise LLMUnavailableError(
-                        f"LLM request failed ({reason}) after {attempt} attempts."
+                    raise fail(
+                        LLMUnavailableError(
+                            f"LLM request failed ({reason}) after {attempt} attempts."
+                        )
                     ) from exc
 
                 delay = self._backoff_delay(attempt)
