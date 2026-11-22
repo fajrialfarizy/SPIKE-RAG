@@ -55,6 +55,9 @@ SESSION_DAILY_LIMIT = (
 QUEUE_WAIT = (
     "Sedang mengantre karena batas layanan, perkiraan tunggu ~{seconds} detik."
 )
+# Fix pack 7: appended to a RATE_LIMITED answer when the limiter knows the wait,
+# rounded up to config.RETRY_AFTER_ROUNDING_SECONDS.
+RETRY_AFTER = "Silakan coba lagi dalam sekitar {seconds} detik."
 # Mirrors core.prompts.DAILY_QUOTA_RESPONSE (the pipeline owns that text); kept
 # here so the UI strings stay in one reviewable file.
 DAILY_QUOTA = "Kuota harian layanan sedang habis. Silakan coba lagi besok."

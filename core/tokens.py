@@ -18,9 +18,15 @@ from __future__ import annotations
 
 import math
 import threading
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import config
+
+# One tokenizer per model for the whole process (fix pack 7): the context
+# budget, the prompt estimator in the limiter and the app startup warm-up all use
+# the same intfloat/multilingual-e5-small artifact, and loading it is slow.
+_TOKENIZER_CACHE: Dict[str, Any] = {}
+_TOKENIZER_CACHE_LOCK = threading.Lock()
 
 
 class TokenCounterError(RuntimeError):
@@ -60,19 +66,24 @@ class E5TokenCounter:
     def _ensure_tokenizer(self):
         if self._tokenizer is not None:
             return self._tokenizer
-        try:
-            from transformers import AutoTokenizer
-        except ImportError as exc:  # pragma: no cover - environment dependent
-            raise TokenCounterError(
-                "transformers is not installed, so the e5 tokenizer cannot be used "
-                "for context budgeting."
-            ) from exc
-        try:
-            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        except Exception as exc:  # pragma: no cover - environment dependent
-            raise TokenCounterError(
-                f"Could not load the tokenizer for '{self.model_name}'."
-            ) from exc
+        with _TOKENIZER_CACHE_LOCK:
+            cached = _TOKENIZER_CACHE.get(self.model_name)
+            if cached is None:
+                try:
+                    from transformers import AutoTokenizer
+                except ImportError as exc:  # pragma: no cover - environment dependent
+                    raise TokenCounterError(
+                        "transformers is not installed, so the e5 tokenizer cannot be "
+                        "used for context budgeting."
+                    ) from exc
+                try:
+                    cached = AutoTokenizer.from_pretrained(self.model_name)
+                except Exception as exc:  # pragma: no cover - environment dependent
+                    raise TokenCounterError(
+                        f"Could not load the tokenizer for '{self.model_name}'."
+                    ) from exc
+                _TOKENIZER_CACHE[self.model_name] = cached
+        self._tokenizer = cached
         return self._tokenizer
 
     def count_tokens(self, text: str) -> int:

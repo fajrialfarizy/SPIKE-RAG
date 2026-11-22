@@ -9,9 +9,11 @@ keeps rolling 60-second and 24-hour counters, and refuses or queues the call:
 
 - daily budget exhausted -> ``DailyTokenBudgetExhausted`` (the pipeline answers
   with the daily-quota text and makes no provider call),
-- per-minute budget cannot be met inside the pipeline deadline ->
-  ``MinuteTokenBudgetExhausted`` (the pipeline answers with the rate-limit text),
-- per-minute budget can be met by waiting -> wait, bounded by the deadline.
+- per-minute budget cannot be met inside the queue limit ->
+  ``MinuteTokenBudgetExhausted`` carrying ``retry_after_seconds`` (the pipeline
+  answers RATE_LIMITED with that wait),
+- per-minute budget can be met by waiting -> wait, bounded by
+  ``QUEUE_MAX_WAIT_SECONDS`` and never by the model deadline (fix pack 7).
 
 Response headers refine the local estimate (Groq docs, checked 2026-11-21):
 ``x-ratelimit-remaining-tokens`` is TPM, ``x-ratelimit-reset-tokens`` is the TPM
@@ -34,7 +36,6 @@ import time
 from typing import Any, Callable, Dict, Mapping, Optional
 
 import config
-from core.deadline import Deadline
 
 
 class TokenBudgetExceeded(RuntimeError):
@@ -46,7 +47,16 @@ class DailyTokenBudgetExhausted(TokenBudgetExceeded):
 
 
 class MinuteTokenBudgetExhausted(TokenBudgetExceeded):
-    """The per-minute budget cannot be met before the pipeline deadline."""
+    """
+    The per-minute budget cannot be met inside the queue limit.
+
+    ``retry_after_seconds`` is the wait the limiter computed, so the caller can
+    tell the student how long to wait instead of only refusing (fix pack 7).
+    """
+
+    def __init__(self, message: str, retry_after_seconds: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 def _integer_header(headers: Mapping[str, str], name: str) -> Optional[int]:
@@ -85,7 +95,10 @@ class TokenAwareRateLimiter:
         limits: Optional[Mapping[str, Any]] = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
-        chars_per_token: float = config.CONTEXT_TOKEN_ESTIMATOR_CHARS_PER_TOKEN,
+        dynamic_chars_per_token: float = config.TOKEN_ESTIMATE_DYNAMIC_CHARS_PER_TOKEN,
+        margin_ratio: float = config.TOKEN_ESTIMATE_MARGIN_RATIO,
+        token_counter: Optional[Any] = None,
+        queue_max_wait_seconds: float = config.QUEUE_MAX_WAIT_SECONDS,
         minute_window_seconds: float = config.TOKEN_LIMITER_MINUTE_WINDOW_SECONDS,
         day_window_seconds: float = config.TOKEN_LIMITER_DAY_WINDOW_SECONDS,
     ):
@@ -96,7 +109,12 @@ class TokenAwareRateLimiter:
         self.requests_per_day = int(self.limits["requests_per_day"])
         self._clock = clock
         self._sleep = sleep
-        self._chars_per_token = float(chars_per_token)
+        self._dynamic_chars_per_token = float(dynamic_chars_per_token)
+        self._margin_ratio = float(margin_ratio)
+        self._token_counter = token_counter
+        # Static prompt text is counted once per distinct string, not per call.
+        self._static_token_cache: Dict[str, int] = {}
+        self.queue_max_wait_seconds = float(queue_max_wait_seconds)
         self._minute_window = float(minute_window_seconds)
         self._day_window = float(day_window_seconds)
 
@@ -117,22 +135,47 @@ class TokenAwareRateLimiter:
         self.total_recorded = 0
 
     # -- estimation --------------------------------------------------------
+    @property
+    def token_counter(self) -> Any:
+        """The tokenizer used for the static prompt parts, loaded once."""
+        if self._token_counter is None:
+            from core.tokens import E5TokenCounter
+
+            self._token_counter = E5TokenCounter()
+        return self._token_counter
+
+    def _static_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+        with self._lock:
+            cached = self._static_token_cache.get(text)
+        if cached is None:
+            cached = int(self.token_counter.count_tokens(text))
+            with self._lock:
+                self._static_token_cache[text] = cached
+        return cached
+
     def estimate_tokens(
         self,
         system_prompt: str,
         user_prompt: str,
-        max_completion_tokens: int,
+        completion_reservation: int,
+        static_extra: str = "",
     ) -> int:
         """
-        Conservative prompt estimate plus the call's completion allowance.
+        Prompt estimate plus the completion tokens this call is expected to use.
 
-        ``max_completion_tokens`` covers the visible answer and the hidden
-        reasoning tokens, because Groq counts both as completion tokens.
+        Static text (system prompt, addenda, the structured-output schema passed as
+        ``static_extra``) is counted exactly with the tokenizer and cached; only the
+        user prompt, which carries the context and the question, uses the
+        calibrated chars-per-token ratio. A margin is added to the whole prompt
+        estimate (fix pack 7).
         """
-        text = f"{system_prompt or ''}{user_prompt or ''}"
-        by_chars = math.ceil(len(text) / self._chars_per_token)
-        by_words = len(text.split())
-        return int(max_completion_tokens) + max(by_chars, by_words)
+        static = self._static_tokens(f"{system_prompt or ''}{static_extra or ''}")
+        dynamic = math.ceil(len(user_prompt or "") / self._dynamic_chars_per_token)
+        prompt = static + dynamic
+        margin = math.ceil(prompt * self._margin_ratio)
+        return int(max(0, int(completion_reservation))) + prompt + margin
 
     # -- windows -----------------------------------------------------------
     def _roll_day(self, now: float) -> None:
@@ -205,14 +248,25 @@ class TokenAwareRateLimiter:
 
     # -- reservation API ---------------------------------------------------
     def reserve(
-        self, tokens: int, deadline: Optional[Deadline] = None
+        self, tokens: int, max_wait_seconds: Optional[float] = None
     ) -> list[float]:
         """
-        Reserve tokens for one call, waiting if only the minute window is tight.
+        Reserve tokens for one call, waiting only inside the queue limit.
+
+        The wait is bounded by ``QUEUE_MAX_WAIT_SECONDS`` (fix pack 7), never by
+        the model deadline: the caller refunds the waited time to its deadline, so
+        a legitimate queue wait cannot make the model call fail. A wait longer
+        than the limit is refused immediately with the computed wait, which the
+        pipeline renders as RATE_LIMITED with ``retry_after_seconds``.
 
         Returns the reservation entry that ``record`` or ``release`` must settle.
         """
         tokens = max(0, int(tokens))
+        limit = (
+            self.queue_max_wait_seconds
+            if max_wait_seconds is None
+            else float(max_wait_seconds)
+        )
 
         # A single call larger than the whole minute window can never fit, no
         # matter how long it waits (Groq answers it with HTTP 413). Fail loudly
@@ -242,21 +296,15 @@ class TokenAwareRateLimiter:
                     self.total_reserved += tokens
                     return entry
 
-            remaining = None if deadline is None else deadline.remaining()
-            if remaining is not None and wait > remaining:
+            if limit >= 0 and wait > limit:
                 raise MinuteTokenBudgetExhausted(
-                    "The per-minute token budget cannot be met before the deadline."
-                )
-            if remaining is None and wait > self._minute_window:
-                raise MinuteTokenBudgetExhausted(
-                    "The per-minute token budget cannot be met."
+                    f"The queue wait of {wait:.1f}s exceeds the "
+                    f"{limit:.1f}s limit.",
+                    retry_after_seconds=math.ceil(wait),
                 )
 
             self.waits += 1
-            if deadline is not None:
-                deadline.sleep(wait, self._sleep)
-            else:
-                self._sleep(wait)
+            self._sleep(wait)
 
     def record(self, entry: list[float], actual_tokens: int) -> None:
         """Replace a reservation with the usage the provider reported."""

@@ -120,6 +120,22 @@ Penghitung kuota per sesi dan limiter token Groq hidup **di memori proses**:
 restart atau sleep Streamlit Cloud mereset keduanya. Kendali yang sebenarnya adalah
 kuota akun Groq (8.000 TPM / 200.000 TPD), bukan penghitung sesi ini.
 
+Antrean token (Fix Pack 7) punya batas sendiri, `QUEUE_MAX_WAIT_SECONDS` (45 s):
+bila sebuah panggilan harus menunggu jendela 60 detik lebih lama dari itu, pipeline
+tidak menunggu dan langsung menjawab RATE_LIMITED beserta `retry_after_seconds`.
+Waktu antre yang masih diizinkan tidak dibebankan ke `PIPELINE_TOTAL_DEADLINE_SECONDS`
+(batas itu hanya menjaga waktu model dan pemrosesan). Estimasi token memakai hitungan
+eksak untuk bagian statis (system prompt, addendum, skema JSON) dan rasio
+`TOKEN_ESTIMATE_DYNAMIC_CHARS_PER_TOKEN` (4,0 karakter/token) plus margin 12% untuk
+bagian dinamis; reservasi completion memakai perkiraan (600/700/120), bukan plafon.
+`scripts/replay_limiter_sequence.py` memutar ulang satu urutan dua pertanyaan dengan
+jam palsu untuk memeriksa kebijakan ini tanpa memanggil Groq.
+
+Jawaban mode bebas (specific, rute report-id, cross_report tanpa kelompok) dipangkas
+di backend bila melebihi `ANSWER_MAX_BULLETS` (6) atau `ANSWER_MAX_BULLETS_PER_REPORT`
+(2 per laporan): tidak ada panggilan model kedua, dan sitasi, baris cakupan serta blok
+Sumber dihitung ulang dari teks final.
+
 ## Catatan SQLite
 
 `chromadb` membutuhkan SQLite ≥ 3.35. Di Linux yang SQLite-nya lebih lama, `pysqlite3-binary`

@@ -19,7 +19,7 @@ from typing import Dict, Iterable, Mapping
 import config
 
 SYSTEM_PROMPT_VERSION = "1.0"
-ADDENDUM_VERSION = "1.3"
+ADDENDUM_VERSION = "1.4"
 # Fix pack J1e: comparison mode has its own addendum because its answer is JSON
 # validated by the backend, not free prose. The PRD 9.1 core stays verbatim.
 COMPARE_ADDENDUM_VERSION = "2.1"
@@ -91,7 +91,7 @@ Untuk pertanyaan yang relevan tetapi informasinya tidak ditemukan:
 "Maaf, informasi yang kamu cari belum tersedia dalam basis pengetahuan Lab Prestasi. Kamu dapat menghubungi pengurus Lab Prestasi untuk memperoleh informasi lebih lanjut."
 """
 
-CITATION_FORMAT_ADDENDUM = """**FORMAT JAWABAN DAN SITASI TEKNIS (v1.3)**
+CITATION_FORMAT_ADDENDUM = """**FORMAT JAWABAN DAN SITASI TEKNIS (v1.4)**
 
 1. Backend memberi setiap laporan pada konteks satu alias, misalnya LAP1 dan LAP2. Alias tersebut menggantikan report_id.
 2. Tulis alias persis dalam bentuk [LAP1]. Letakkan sitasi di akhir kalimat atau akhir poin, tepat sebelum tanda baca penutup. Jangan menaruh sitasi di tengah kalimat, di dalam tanda kurung, atau tepat setelah kata depan.
@@ -100,7 +100,7 @@ CITATION_FORMAT_ADDENDUM = """**FORMAT JAWABAN DAN SITASI TEKNIS (v1.3)**
 5. Jangan menyebut nama alias di dalam kalimat; sebutkan isi laporannya, bukan kode aliasnya.
 6. Gunakan hanya alias yang muncul pada konteks. Alias yang tidak dikenal akan dihapus oleh backend.
 7. Jawab dengan poin pendek atau paragraf pendek. Jangan menggunakan tabel dan jangan menulis HTML, termasuk <br>.
-8. Paling banyak {max_bullets} poin. Gabungkan poin yang serupa menjadi satu poin; jangan mengulang isi yang sama dengan kata berbeda.
+8. Paling banyak {max_bullets} poin, dan paling banyak {max_bullets_per_report} poin untuk setiap laporan. Gabungkan poin yang serupa menjadi satu poin; jangan mengulang isi yang sama dengan kata berbeda.
 9. Rangkum dengan bahasamu sendiri. Parafrase setiap poin dan jangan menyalin potongan panjang atau frasa panjang dari dokumen.
 10. Jawab ringkas, paling banyak sekitar {target_words} kata, kecuali mode catalog.
 11. Setiap laporan yang kamu sebutkan wajib disertai sitasi, termasuk bila konteks hanya berisi satu laporan.
@@ -110,6 +110,7 @@ CITATION_FORMAT_ADDENDUM = """**FORMAT JAWABAN DAN SITASI TEKNIS (v1.3)**
 """.format(
     target_words=config.ANSWER_TARGET_WORDS,
     max_bullets=config.ANSWER_MAX_BULLETS,
+    max_bullets_per_report=config.ANSWER_MAX_BULLETS_PER_REPORT,
 )
 
 SYSTEM_PROMPT = f"{PRD_9_1_SYSTEM_PROMPT}\n\n{CITATION_FORMAT_ADDENDUM}"

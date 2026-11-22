@@ -40,9 +40,18 @@ LLM_MAX_RETRIES = 3
 LLM_RETRY_BACKOFF_FACTOR = 2.0
 # Per-call provider timeout. Bounded further by the remaining pipeline budget.
 LLM_TIMEOUT_SECONDS = 20.0
-# Whole-question budget: every model call and every retry delay respects what is
-# left of it (report K2).
+# Model-and-processing budget for one question (report K2, narrowed in fix pack 7).
+# Queue time is excluded from it: a wait for the minute token window is bounded
+# separately by QUEUE_MAX_WAIT_SECONDS and refunded to this budget, so a
+# legitimate wait can never consume the time the model needs. 60 s covers the
+# analyzer (~1-3 s), retrieval (~1-2 s), one answer call (~9-30 s at effort
+# "low") and the single citation retry, with a wide margin.
 PIPELINE_TOTAL_DEADLINE_SECONDS = 60.0
+# Fix pack 7: how long one question may wait for the per-minute token window.
+# A wait that ends when the previous question's tokens age out (the observed case
+# is about 20-30 s) is still served; anything longer answers RATE_LIMITED at once
+# with retry_after_seconds instead of burning the deadline in the queue.
+QUEUE_MAX_WAIT_SECONDS = 45.0
 
 # Chunking Parameters
 CHUNK_TARGET_MIN_TOKENS = 350
@@ -358,9 +367,36 @@ LLM_MAX_OUTPUT_TOKENS_COMPARE = 900
 # Comparison mode has its own budget (fix pack H3); specific mode and the exact
 # report-id route keep MAX_CONTEXT_TOKENS.
 CONTEXT_TOKEN_ESTIMATOR_CHARS_PER_TOKEN = 2.5
-# Concise-answer target for the addendum v1.3 (catalog mode excepted).
+
+# Prompt token estimator for the limiter (fix pack 7). The old rule (one
+# chars/2.5 ratio over the whole prompt) over-estimated a real answer prompt by
+# 60-68%: it ignored how much better the model tokenizer packs Indonesian prose.
+# Now the STATIC parts (system prompt, addenda, structured-output schema) are
+# counted exactly with the e5 tokenizer, and only the DYNAMIC parts (context,
+# template, hint, question) use this ratio. Fitted from measured runs (prompt
+# tokens minus the exact static count):
+#   specific: user 6,974 chars -> 1,850 dynamic tokens -> 3.77 chars/token
+#   compare : user 8,740 chars -> 2,098 dynamic tokens -> 4.17 chars/token
+# 4.3 with the 12% margin stays above both measured prompts without doubling
+# them: specific ~3.0k vs 2.9k actual, compare ~4.2k vs 3.7k actual. Erring high
+# is the safe direction (the provider refuses a request that is too large).
+TOKEN_ESTIMATE_DYNAMIC_CHARS_PER_TOKEN = 4.3
+TOKEN_ESTIMATE_MARGIN_RATIO = 0.12
+# Completion tokens reserved per call (fix pack 7). The provider's ceiling check
+# charges the declared completion cap up front, so the cap stays at its real value
+# (LLM_MAX_OUTPUT_TOKENS / ..._COMPARE / LLM_ANALYZER_MAX_OUTPUT_TOKENS) and the
+# reservation uses the expected completion instead. Measured completions: free
+# text 529, compare 538, analyzer about 60-80.
+COMPLETION_RESERVATION_TOKENS = 600
+COMPLETION_RESERVATION_TOKENS_COMPARE = 700
+COMPLETION_RESERVATION_TOKENS_ANALYZER = 120
+# Concise-answer target for the addendum (catalog mode excepted).
 ANSWER_TARGET_WORDS = 180
 ANSWER_MAX_BULLETS = 6
+# Fix pack 7: addendum v1.4 also caps the points per report. The backend trims
+# any answer above ANSWER_MAX_BULLETS with the same per-report cap (no retry, no
+# extra model call).
+ANSWER_MAX_BULLETS_PER_REPORT = 2
 
 # Analyzer (LLM call #1)
 ANALYZER_MAX_SEARCH_QUERY_CHARS = 300
@@ -717,6 +753,9 @@ SESSION_DAY_WINDOW_SECONDS = 86400
 QUEUE_MESSAGE_ESTIMATE_TOKENS = 4800
 # Only a wait longer than this is worth a message.
 QUEUE_MESSAGE_MIN_WAIT_SECONDS = 3.0
+# A RATE_LIMITED answer that knows how long to wait rounds the wait to this step
+# (up) before telling the student (fix pack 7).
+RETRY_AFTER_ROUNDING_SECONDS = 5.0
 CHAT_HISTORY_MAX_TURNS = 50
 
 # Knowledge-base sources. "local" serves an existing chroma_db + manifest;

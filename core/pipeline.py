@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 import config
 from core import compare_answer, prompts
 from core.analyzer import Analyzer
+from core.answer_trimmer import trim_bullets
 from core.catalog import render_catalog_answer
 from core.citations import (
     build_source_block,
@@ -41,7 +42,7 @@ from core.coverage import (
     comparison_totals,
     count_reports,
 )
-from core.deadline import Deadline, DeadlineExceeded
+from core.deadline import Deadline, DeadlineExceeded, QueueDeadlineExceeded
 from core.guardrails import (
     OutputGuard,
     detect_instruction_override,
@@ -105,6 +106,14 @@ class DebugInfo:
     negation: Dict[str, Any] = field(default_factory=dict)
     # Tokens saved by collapsing wrapped lines in the rendered context (L1d).
     context_tokens_saved: int = 0
+    # Fix pack 7: where the time went, so a non-ANSWERED run can be read without
+    # --show-raw (analyzer_ms, retrieval_ms, queue_wait_ms, model_ms, post_ms).
+    phases: Dict[str, float] = field(default_factory=dict)
+    deadline_remaining_seconds: float = 0.0
+    # Wait the limiter computed when it refused to queue (RATE_LIMITED only).
+    retry_after_seconds: Optional[float] = None
+    # Bullets dropped by the backend trim (fix pack 7, M4b).
+    dropped_bullets: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -133,6 +142,10 @@ class DebugInfo:
             "context_text": self.context_text,
             "negation": self.negation,
             "context_tokens_saved": self.context_tokens_saved,
+            "phases": self.phases,
+            "deadline_remaining_seconds": self.deadline_remaining_seconds,
+            "retry_after_seconds": self.retry_after_seconds,
+            "dropped_bullets": self.dropped_bullets,
         }
 
 
@@ -142,6 +155,8 @@ class RagResult:
     answer: str
     cited_report_ids: List[str] = field(default_factory=list)
     debug: DebugInfo = field(default_factory=DebugInfo)
+    # Set when RATE_LIMITED knows how long the wait would be (fix pack 7).
+    retry_after_seconds: Optional[float] = None
 
 
 def configure_file_logging(log_dir: Path = config.LOG_DIR) -> Path:
@@ -295,6 +310,7 @@ class RagPipeline:
             "context_text": "",
             "negation": {},
             "context_tokens_saved": 0,
+            "dropped_bullets": 0,
         }
 
         def result(
@@ -302,8 +318,29 @@ class RagPipeline:
             answer: str,
             cited: Optional[List[str]] = None,
             error_type: Optional[str] = None,
+            retry_after_seconds: Optional[float] = None,
         ) -> RagResult:
             latency_ms = round((time.perf_counter() - started) * 1000, 1)
+            calls = list(state["calls"])
+            retrieval_ms = float(state["embedding_latency_ms"] or 0.0)
+            calls_latency_ms = sum(float(call.get("latency_ms") or 0.0) for call in calls)
+            phases = {
+                "analyzer_ms": float(next(
+                    (call.get("latency_ms") or 0.0
+                     for call in calls if call.get("name") == "analyzer"),
+                    0.0,
+                )),
+                "retrieval_ms": retrieval_ms,
+                "queue_wait_ms": sum(
+                    float(call.get("queue_wait_ms") or 0.0) for call in calls
+                ),
+                "model_ms": sum(
+                    float(call.get("model_latency_ms") or 0.0) for call in calls
+                ),
+                # Everything that is neither a model call nor retrieval: prompt
+                # assembly, validation, citations, guardrails, rendering.
+                "post_ms": max(0.0, latency_ms - calls_latency_ms - retrieval_ms),
+            }
             debug = DebugInfo(
                 mode=state["mode"],
                 filters=state["filters"],
@@ -316,8 +353,8 @@ class RagPipeline:
                 missing_report_ids=state["missing_report_ids"],
                 used_fallback=state["used_fallback"],
                 input_truncated=state["input_truncated"],
-                calls=list(state["calls"]),
-                token_usage=self._sum_usage(state["calls"]),
+                calls=calls,
+                token_usage=self._sum_usage(calls),
                 context_dropped_chunk_ids=list(state["context_dropped_chunk_ids"]),
                 analyzer=state["analyzer"],
                 compare_by=state["compare_by"],
@@ -330,6 +367,10 @@ class RagPipeline:
                 context_text=state["context_text"],
                 negation=dict(state["negation"]),
                 context_tokens_saved=int(state["context_tokens_saved"]),
+                phases={key: round(value, 1) for key, value in phases.items()},
+                deadline_remaining_seconds=round(deadline.remaining(), 1),
+                retry_after_seconds=retry_after_seconds,
+                dropped_bullets=int(state["dropped_bullets"]),
             )
             logger.info(
                 "chat_request status=%s mode=%s route=%s chunks=%d latency_ms=%.1f "
@@ -346,6 +387,7 @@ class RagPipeline:
                 answer=answer,
                 cited_report_ids=cited or [],
                 debug=debug,
+                retry_after_seconds=retry_after_seconds,
             )
 
         try:
@@ -485,14 +527,29 @@ class RagPipeline:
                 ),
             )
 
+        except QueueDeadlineExceeded as exc:
+            # Fix pack 7: a local queue (token window or concurrency slot) ran out
+            # of budget. That is a rate limit, never a technical failure.
+            logger.warning(
+                "chat_queue_exhausted error_type=%s retry_after=%s",
+                type(exc).__name__,
+                exc.retry_after_seconds,
+            )
+            return result(
+                AnswerStatus.RATE_LIMITED,
+                prompts.RATE_LIMITED_RESPONSE,
+                error_type=type(exc).__name__,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
         except LLMRateLimitError as exc:
             is_daily = bool(getattr(exc, "is_daily_limit", False))
             if is_daily:
                 state["incidents"]["daily_limit"] = 1
             logger.warning(
-                "chat_failed error_type=%s daily_limit=%s",
+                "chat_failed error_type=%s daily_limit=%s retry_after=%s",
                 type(exc).__name__,
                 is_daily,
+                getattr(exc, "retry_after_seconds", None),
             )
             return result(
                 AnswerStatus.RATE_LIMITED,
@@ -500,6 +557,7 @@ class RagPipeline:
                 if is_daily
                 else prompts.RATE_LIMITED_RESPONSE,
                 error_type=type(exc).__name__,
+                retry_after_seconds=exc.retry_after_seconds,
             )
         except DeadlineExceeded as exc:
             logger.warning("chat_failed error_type=DeadlineExceeded")
@@ -839,28 +897,37 @@ class RagPipeline:
             # A blocked answer carries no source block, so it claims no sources.
             return result(AnswerStatus.SECURITY_REFUSED, guarded.text, cited=[])
 
-        state["style"] = citation_style_metrics(guarded.text)
-
         answer_text = guarded.text
         if truncated:
             answer_text = f"{answer_text}\n\n{prompts.TRUNCATION_NOTICE}"
+
+        # Fix pack 7 (approved deviation): enforce the addendum caps here instead
+        # of paying for a second model call. Cites, coverage and Sumber are read
+        # from the TRIMMED text, so nothing claims a point that is gone.
+        answer_text, dropped_bullets = trim_bullets(answer_text)
+        state["dropped_bullets"] = dropped_bullets
+        cited_report_ids = citations.cited_report_ids
+        if dropped_bullets:
+            state["incidents"]["bullets_trimmed"] = dropped_bullets
+            cited_report_ids = process_citations(
+                answer_text, bundle.alias_map, retrieved_ids
+            ).cited_report_ids
+            logger.info("chat_answer_trimmed dropped_bullets=%d", dropped_bullets)
+
+        state["style"] = citation_style_metrics(answer_text)
 
         # Fix pack K2: measured on the answer body, before the backend coverage
         # line and Sumber block, which are not model statements.
         state["negation"] = negation_sentences(answer_text)
 
         coverage_line = self._coverage_line(
-            state, bundle, chunks, citations.cited_report_ids
+            state, bundle, chunks, cited_report_ids
         )
         state["coverage"] = coverage_line
         if coverage_line:
             answer_text = f"{answer_text}{config.COVERAGE_BLOCK_SEPARATOR}{coverage_line}"
 
-        source_block = build_source_block(
-            citations.cited_report_ids, bundle.report_metadata
-        )
+        source_block = build_source_block(cited_report_ids, bundle.report_metadata)
         final_answer = compose_answer(answer_text, source_block)
 
-        return result(
-            AnswerStatus.ANSWERED, final_answer, cited=citations.cited_report_ids
-        )
+        return result(AnswerStatus.ANSWERED, final_answer, cited=cited_report_ids)

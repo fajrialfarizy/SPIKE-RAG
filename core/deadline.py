@@ -14,13 +14,26 @@ TECHNICAL_ERROR with ``error_type=DeadlineExceeded``.
 from __future__ import annotations
 
 import time
-from typing import Callable
+from typing import Callable, Optional
 
 import config
 
 
 class DeadlineExceeded(RuntimeError):
     """Raised when the remaining pipeline budget cannot cover the next step."""
+
+
+class QueueDeadlineExceeded(DeadlineExceeded):
+    """
+    A wait for a local queue (token window, concurrency slot) ran out of budget.
+
+    Fix pack 7 keeps this apart from a real model/processing overrun: the pipeline
+    answers RATE_LIMITED for this one and reserves TECHNICAL_ERROR for failures.
+    """
+
+    def __init__(self, message: str, retry_after_seconds: Optional[float] = None):
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
 
 
 class Deadline:
@@ -39,6 +52,17 @@ class Deadline:
 
     def elapsed(self) -> float:
         return self._clock() - self._started_at
+
+    def extend(self, seconds: float) -> None:
+        """
+        Give back time spent in a local queue (fix pack 7).
+
+        The budget guards model and processing time only, so a wait for the token
+        window or the concurrency slot is added back instead of being charged to
+        the model call that follows.
+        """
+        if seconds and seconds > 0:
+            self.budget_seconds += float(seconds)
 
     def remaining(self) -> float:
         return self.budget_seconds - self.elapsed()

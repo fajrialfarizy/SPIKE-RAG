@@ -30,6 +30,7 @@ caller. Token usage and per-call latency are reported alongside the content.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -41,7 +42,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Mapping, Optional
 
 import config
-from core.deadline import Deadline, DeadlineExceeded
+from core.deadline import Deadline, DeadlineExceeded, QueueDeadlineExceeded
 from core.rate_limiter import (
     DailyTokenBudgetExhausted,
     MinuteTokenBudgetExhausted,
@@ -188,14 +189,20 @@ class LLMConcurrencyLimiter:
 
     @contextmanager
     def slot(self, deadline: Optional[Deadline] = None):
+        # Waiting for a slot is a local queue, not model time: the caller refunds
+        # it to the deadline afterwards (fix pack 7).
         timeout = None if deadline is None else max(0.0, deadline.remaining())
         if timeout is not None and timeout <= 0:
-            raise DeadlineExceeded("No budget is left to wait for an LLM slot.")
+            raise QueueDeadlineExceeded(
+                "No budget is left to wait for an LLM slot."
+            )
         acquired = self._semaphore.acquire(
             blocking=True, timeout=timeout
         )
         if not acquired:
-            raise DeadlineExceeded("Timed out waiting for an LLM concurrency slot.")
+            raise QueueDeadlineExceeded(
+                "Timed out waiting for an LLM concurrency slot."
+            )
         with self._lock:
             self._active += 1
             self.peak = max(self.peak, self._active)
@@ -478,18 +485,49 @@ class GroqLLMClient(LLMClient):
             kwargs["response_format"] = dict(config.LLM_JSON_RESPONSE_FORMAT)
         return kwargs
 
+    @staticmethod
+    def _completion_reservation(
+        max_tokens: int,
+        json_mode: bool,
+        response_format: Optional[Mapping[str, Any]],
+    ) -> int:
+        """Expected completion tokens for this call (fix pack 7).
+
+        The declared cap stays as it is (the provider's ceiling check charges it
+        up front), but the local reservation uses the measured expectation per call
+        type, so a 900-token cap no longer costs 900 tokens of queue time.
+        """
+        if response_format and response_format.get("type") == "json_schema":
+            expected = config.COMPLETION_RESERVATION_TOKENS_COMPARE
+        elif json_mode:
+            expected = config.COMPLETION_RESERVATION_TOKENS_ANALYZER
+        else:
+            expected = config.COMPLETION_RESERVATION_TOKENS
+        return min(int(max_tokens), int(expected))
+
     def _reserve_tokens(
         self,
         system_prompt: str,
         user_prompt: str,
         max_tokens: int,
-        deadline: Optional[Deadline],
+        json_mode: bool,
+        response_format: Optional[Mapping[str, Any]],
     ) -> tuple:
         """Reserve this call's estimated tokens or turn the refusal into a 429."""
         limiter = self.token_limiter
-        estimate = limiter.estimate_tokens(system_prompt, user_prompt, max_tokens)
+        static_extra = (
+            json.dumps(response_format, ensure_ascii=False, sort_keys=True)
+            if response_format
+            else ""
+        )
+        estimate = limiter.estimate_tokens(
+            system_prompt,
+            user_prompt,
+            self._completion_reservation(max_tokens, json_mode, response_format),
+            static_extra=static_extra,
+        )
         try:
-            return limiter.reserve(estimate, deadline), estimate
+            return limiter.reserve(estimate), estimate
         except DailyTokenBudgetExhausted as exc:
             logger.warning("llm_token_budget_exhausted window=daily")
             raise LLMRateLimitError(
@@ -497,10 +535,24 @@ class GroqLLMClient(LLMClient):
                 is_daily_limit=True,
             ) from exc
         except TokenBudgetExceeded as exc:
-            logger.warning("llm_token_budget_exhausted window=minute")
+            retry_after = getattr(exc, "retry_after_seconds", None)
+            logger.warning("llm_token_budget_exhausted window=minute retry_after=%s",
+                           retry_after)
             raise LLMRateLimitError(
-                "The per-minute token budget cannot be met inside the deadline."
+                "The per-minute token budget cannot be met inside the queue limit.",
+                retry_after_seconds=retry_after,
             ) from exc
+
+    @staticmethod
+    def _deadline_elapsed(deadline: Optional[Deadline]) -> float:
+        """Queue timing must use the deadline's own clock, not another one."""
+        return 0.0 if deadline is None else deadline.elapsed()
+
+    @staticmethod
+    def _refund_deadline(deadline: Optional[Deadline], elapsed_before: float) -> None:
+        """Give queue time back to a deadline that only guards model time."""
+        if deadline is not None:
+            deadline.extend(deadline.elapsed() - elapsed_before)
 
     # -- public API --------------------------------------------------------
     def complete(
@@ -523,11 +575,20 @@ class GroqLLMClient(LLMClient):
         model_latency_ms = 0.0
 
         for attempt in range(1, max_attempts + 1):
+            wait_started = self._clock()
+            tokens_before = self.token_limiter.snapshot()["tokens_used_this_minute"]
+            reserve_started = self._deadline_elapsed(deadline)
+            reservation, estimate = self._reserve_tokens(
+                system_prompt, user_prompt, max_tokens, json_mode, response_format
+            )
+            # A queue wait is not model time: refund it to the deadline, so the
+            # answer call still gets the full model budget (fix pack 7).
+            self._refund_deadline(deadline, reserve_started)
+
             if deadline is not None:
                 timeout_seconds = deadline.call_timeout(config.LLM_TIMEOUT_SECONDS)
             else:
                 timeout_seconds = config.LLM_TIMEOUT_SECONDS
-
             kwargs = self._request_kwargs(
                 system_prompt,
                 user_prompt,
@@ -538,11 +599,6 @@ class GroqLLMClient(LLMClient):
                 timeout_seconds,
                 response_format,
             )
-            wait_started = self._clock()
-            tokens_before = self.token_limiter.snapshot()["tokens_used_this_minute"]
-            reservation, estimate = self._reserve_tokens(
-                system_prompt, user_prompt, max_tokens, deadline
-            )
             reservation_info = {
                 "tokens_used_last_60s": tokens_before,
                 "estimated_tokens": estimate,
@@ -550,7 +606,9 @@ class GroqLLMClient(LLMClient):
                 "capacity_tokens_per_minute": self.token_limiter.tokens_per_minute,
             }
             try:
+                slot_started = self._deadline_elapsed(deadline)
                 with self.limiter.slot(deadline):
+                    self._refund_deadline(deadline, slot_started)
                     queue_wait_ms += (self._clock() - wait_started) * 1000.0
                     model_started = self._clock()
                     response = self._client.chat.completions.create(**kwargs)

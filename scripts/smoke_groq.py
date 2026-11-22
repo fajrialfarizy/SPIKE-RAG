@@ -37,6 +37,7 @@ from core.knowledge_base import KnowledgeBase, KnowledgeBaseError
 from core.llm_client import GroqLLMClient
 from core.pipeline import RagPipeline, configure_file_logging
 from core.rate_limiter import get_token_limiter
+from core.tokens import E5TokenCounter
 from core.warmup import WarmupError, warm_up_embedder
 from ingestion.embedder import E5Embedder
 
@@ -261,10 +262,21 @@ def main(argv: Optional[list] = None) -> int:
         return 2
     print(f"embedder warm-up: {warmup_ms} ms", flush=True)
 
+    # Fix pack 7: the limiter estimates static prompt tokens with this tokenizer;
+    # load it before the first question so a cold load does not eat its deadline.
+    token_counter = E5TokenCounter()
+    token_started = time.perf_counter()
+    token_counter.count_tokens(config.EMBEDDING_WARMUP_QUERY)
+    print(
+        f"tokenizer warm-up: {round((time.perf_counter() - token_started) * 1000.0, 1)} ms",
+        flush=True,
+    )
+
     pipeline = RagPipeline(
         knowledge_base=knowledge_base,
         llm=GroqLLMClient(),
         embedder=embedder,
+        token_counter=token_counter,
         answer_reasoning_effort=args.answer_effort,
     )
 
@@ -275,6 +287,7 @@ def main(argv: Optional[list] = None) -> int:
     cached_tokens = 0
     cached_reported = False
     truncated_answers = 0
+    dropped_bullets_total = 0
     negation_total = 0
     style_totals = {"mid_sentence_citations": 0, "unbalanced_parentheses": 0}
     print(
@@ -292,13 +305,23 @@ def main(argv: Optional[list] = None) -> int:
         result = pipeline.run(question)
         wall_ms = round((time.perf_counter() - started) * 1000.0, 1)
 
+        # Fix pack 7: error_type and the phase timings are always printed, so a
+        # non-ANSWERED status is diagnosable without --show-raw.
         print(
-            f"status={result.status.value} mode={result.debug.mode} "
-            f"route={result.debug.route} filters={_json(result.debug.filters)} "
+            f"status={result.status.value} error_type={result.debug.error_type} "
+            f"mode={result.debug.mode} route={result.debug.route} "
+            f"filters={_json(result.debug.filters)} "
             f"used_fallback={result.debug.used_fallback}",
             flush=True,
         )
         print(f"compare_by={result.debug.compare_by} groups={_json(result.debug.groups)}")
+        print(
+            f"phases={_json(result.debug.phases)} "
+            f"deadline_remaining_s={result.debug.deadline_remaining_seconds} "
+            f"retry_after_s={result.debug.retry_after_seconds} "
+            f"dropped_bullets={result.debug.dropped_bullets}",
+            flush=True,
+        )
         print_analyzer(result.debug.analyzer)
         print(f"embedding_latency_ms={result.debug.embedding_latency_ms}")
         print(f"context_tokens_saved={result.debug.context_tokens_saved}")
@@ -348,6 +371,7 @@ def main(argv: Optional[list] = None) -> int:
         truncated_answers += int(
             (result.debug.incidents or {}).get("answer_truncated") or 0
         )
+        dropped_bullets_total += int(result.debug.dropped_bullets or 0)
         negation_total += int(negation.get("count") or 0)
         for key in style_totals:
             style_totals[key] += int((result.debug.style or {}).get(key) or 0)
@@ -399,6 +423,7 @@ def main(argv: Optional[list] = None) -> int:
         f"{capacity['questions_per_day']} questions/day"
     )
     print(f"truncated_answers={truncated_answers}")
+    print(f"dropped_bullets_total={dropped_bullets_total}")
     print(f"negation_sentences_total={negation_total}")
     print(f"style_totals={_json(style_totals)}")
     print(

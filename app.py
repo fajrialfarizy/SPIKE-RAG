@@ -13,6 +13,7 @@ reached from the authenticated chat screen.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -32,7 +33,7 @@ SQLITE_VERSION = ensure_sqlite_version()
 from core.auth import AuthConfigurationError, AuthManager
 from core.kb_sync import DriveKBSource, KBSynchronizer, KBSyncError, KBVersion
 from core.llm_client import GroqLLMClient
-from core.pipeline import RagPipeline, configure_file_logging
+from core.pipeline import AnswerStatus, RagPipeline, configure_file_logging
 from core.rate_limiter import TokenAwareRateLimiter, get_token_limiter
 from core.settings import Settings, SettingsError, load_settings
 from core.tokens import E5TokenCounter
@@ -142,11 +143,22 @@ def build_runtime(settings: Settings) -> AppRuntime:
     warmup_ms = warm_up_embedder(embedder)
     embedder_load_seconds = float(getattr(embedder, "load_seconds", 0.0) or 0.0)
 
+    # Fix pack 7: the limiter counts the static prompt parts with this tokenizer.
+    # Load it during startup, so a cold load can never be charged to a question's
+    # deadline. The tokenizer itself is cached per model inside core.tokens.
+    token_started = time.perf_counter()
+    token_counter = E5TokenCounter()
+    token_counter.count_tokens(config.EMBEDDING_WARMUP_QUERY)
+    logger.info(
+        "tokenizer_warmup_ms=%.1f",
+        (time.perf_counter() - token_started) * 1000.0,
+    )
+
     pipeline = RagPipeline(
         knowledge_base=version.handle,
         llm=GroqLLMClient(api_key=settings.groq.api_key),
         embedder=embedder,
-        token_counter=E5TokenCounter(),
+        token_counter=token_counter,
     )
 
     load_seconds = round(time.perf_counter() - started, 2)
@@ -330,6 +342,26 @@ def _append(role: str, content: str) -> None:
     )
 
 
+def retry_after_text(seconds: Optional[float]) -> Optional[str]:
+    """
+    "Silakan coba lagi dalam sekitar N detik", rounded up to the configured step.
+
+    Returns None when the limiter did not say how long the wait would be (fix
+    pack 7): the pipeline text is then shown unchanged.
+    """
+    if seconds is None:
+        return None
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    step = config.RETRY_AFTER_ROUNDING_SECONDS
+    rounded = int(math.ceil(value / step) * step)
+    return T.RETRY_AFTER.format(seconds=rounded)
+
+
 def answer_question(runtime: AppRuntime, question: str) -> str:
     """Run one pipeline call with the shared lock and turn failures into text."""
     started = time.perf_counter()
@@ -337,6 +369,10 @@ def answer_question(runtime: AppRuntime, question: str) -> str:
         with runtime.lock:
             result = runtime.pipeline.run(question)
         answer = result.answer
+        if result.status is AnswerStatus.RATE_LIMITED:
+            notice = retry_after_text(result.retry_after_seconds)
+            if notice:
+                answer = f"{answer}\n\n{notice}"
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         logger.info(
             "app_turn status=%s mode=%s chunks=%d latency_ms=%.1f",
