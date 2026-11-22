@@ -205,6 +205,25 @@ def print_calls(calls: Sequence[dict]) -> None:
             print(f"    limiter={_json(call['reservation'])}")
 
 
+def print_compare_points(group_keys: dict, compare_points: dict) -> None:
+    """
+    Fix pack 10 (R6): every group point as the model wrote it, numbered from 1,
+    so a contrast pick can be checked against the list it refers to.
+    """
+    if not compare_points:
+        return
+    print("compare_points:")
+    for key, points in compare_points.items():
+        print(f"  {key} = {group_keys.get(key, key)}")
+        for item in points:
+            cites = " ".join(
+                config.CITATION_GROUP_TEMPLATE.format(report_id=report_id)
+                for report_id in item.get("cites") or []
+            )
+            status = "kept" if item.get("kept") else f"dropped:{item.get('reason')}"
+            print(f"    {item.get('index')}. {item.get('text')} {cites} [{status}]")
+
+
 def print_score_summary(top1_scores: Sequence[float]) -> None:
     if not top1_scores:
         print("\n=== score summary: no semantic question retrieved a chunk")
@@ -307,6 +326,9 @@ def main(argv: Optional[list] = None) -> int:
     causal_total = 0
     contrast_invalid_total = 0
     contrast_truncated_total = 0
+    generic_dimension_total = 0
+    low_support_total = 0
+    reports_cited_total = 0
     structured_totals = {
         "dropped_points": 0,
         "point_uncited": 0,
@@ -377,6 +399,22 @@ def main(argv: Optional[list] = None) -> int:
             )
         if result.debug.group_keys:
             print(f"group_keys={_json(result.debug.group_keys)}")
+        print_compare_points(
+            result.debug.group_keys or {}, result.debug.compare_points or {}
+        )
+        # Fix pack 10 (R3b/R4): the wording counters and the breadth count, for
+        # every mode. Their samples stay in the debug object.
+        wording_metrics = result.debug.wording or {}
+        support_metrics = result.debug.support or {}
+        print(
+            f"reports_cited={result.debug.reports_cited} "
+            f"generic_dimension={incidents.get('generic_dimension', 0)} "
+            f"low_support_points={support_metrics.get('low_support_points', 0)} "
+            f"support_min={support_metrics.get('minimum')} "
+            f"interpretive_phrases="
+            f"{(wording_metrics.get('interpretive') or {}).get('count', 0)} "
+            f"strong_verbs={(wording_metrics.get('strong_verbs') or {}).get('count', 0)}"
+        )
         negation = result.debug.negation or {}
         causal = result.debug.causal or {}
         print(
@@ -398,6 +436,14 @@ def main(argv: Optional[list] = None) -> int:
             print("causal_samples:")
             for sample in causal["samples"]:
                 print(f"  - {sample}")
+        support_metrics = result.debug.support or {}
+        if args.show_raw and support_metrics.get("samples"):
+            print("low_support_samples:")
+            for sample in support_metrics["samples"]:
+                print(
+                    f"  - overlap={sample.get('overlap')} "
+                    f"cites={sample.get('report_ids')} {sample.get('text')}"
+                )
         if result.debug.coverage:
             print(f"coverage: {result.debug.coverage}")
         if args.show_raw:
@@ -443,6 +489,11 @@ def main(argv: Optional[list] = None) -> int:
             structured_totals[key] += int(incidents.get(key) or 0)
         for key in style_totals:
             style_totals[key] += int((result.debug.style or {}).get(key) or 0)
+        generic_dimension_total += int(incidents.get("generic_dimension") or 0)
+        low_support_total += int(
+            (result.debug.support or {}).get("low_support_points") or 0
+        )
+        reports_cited_total += int(result.debug.reports_cited or 0)
 
         print(
             f"cumulative_tokens={cumulative_tokens} "
@@ -496,6 +547,9 @@ def main(argv: Optional[list] = None) -> int:
     print(f"causal_connectors_total={causal_total}")
     print(f"contrast_invalid_total={contrast_invalid_total}")
     print(f"contrast_truncated_total={contrast_truncated_total}")
+    print(f"generic_dimension_total={generic_dimension_total}")
+    print(f"low_support_points_total={low_support_total}")
+    print(f"reports_cited_total={reports_cited_total}")
     print(f"answer_format={config.ANSWER_FORMAT}")
     print(f"structured_totals={_json(structured_totals)}")
     print(f"style_totals={_json(style_totals)}")
