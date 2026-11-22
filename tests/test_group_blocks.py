@@ -12,6 +12,8 @@ from core.retriever import RetrievedChunk
 from enums import QueryMode
 from tests.stubs import FakeLLM, FilteringKnowledgeBase, RecordingEmbedder, WordCountTokenizer
 
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
+
 
 def metadata(report_id, level="Finalis", competition_type="Business Plan"):
     return {
@@ -62,20 +64,14 @@ def structured_payload():
     """One valid comparison answer citing both groups (fix pack J1)."""
     return json.dumps(
         {
-            "groups": [
-                {
-                    "label": "meraih penghargaan",
-                    "points": [
-                        {"text": "Tim juara fokus pada validasi pasar.", "cite": ["LAP1"]}
-                    ],
-                },
-                {
-                    "label": "belum juara (finalis)",
-                    "points": [
-                        {"text": "Tim finalis kekurangan waktu uji coba.", "cite": ["LAP2"]}
-                    ],
-                },
-            ],
+            "groups": {
+                "g1": [
+                    {"text": "Tim juara fokus pada validasi pasar.", "cite": ["LAP1"]}
+                ],
+                "g2": [
+                    {"text": "Tim finalis kekurangan waktu uji coba.", "cite": ["LAP2"]}
+                ],
+            },
             "contrasts": [],
         }
     )

@@ -31,6 +31,8 @@ from tests.stubs import (
     WordCountTokenizer,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
+
 AWARD_LABEL = "meraih penghargaan"
 FINALIST_LABEL = "belum juara (finalis)"
 AWARD_HEADING = (
@@ -40,26 +42,24 @@ FINALIST_HEADING = "Tim belum juara (finalis)"
 
 
 # -- N1: paired contrasts --------------------------------------------------
-def _side(label, text, reports):
-    return {"label": label, "text": text, "cite": reports}
+def _side(group, text, reports):
+    """One contrast side addressed by its model-facing group key."""
+    return {"group": group, "text": text, "cite": reports}
 
 
 def _contrast(dimension, award_text="Wawancara pengguna.", finalist_text="Data teknis."):
     return {
         "dimension": dimension,
         "sides": [
-            _side(AWARD_LABEL, award_text, ["LAP1"]),
-            _side(FINALIST_LABEL, finalist_text, ["LAP2"]),
+            _side("g1", award_text, ["LAP1"]),
+            _side("g2", finalist_text, ["LAP2"]),
         ],
     }
 
 
 def _validation_payload(contrasts):
     return {
-        "groups": [
-            {"label": AWARD_LABEL, "points": []},
-            {"label": FINALIST_LABEL, "points": []},
-        ],
+        "groups": {"g1": [], "g2": []},
         "contrasts": contrasts,
     }
 
@@ -67,12 +67,13 @@ def _validation_payload(contrasts):
 ALIAS_MAP = {"LAP1": "RPT0001", "LAP2": "RPT0002"}
 REPORT_GROUP = {"RPT0001": AWARD_LABEL, "RPT0002": FINALIST_LABEL}
 LABELS = [AWARD_LABEL, FINALIST_LABEL]
+GROUP_KEYS = {"g1": AWARD_LABEL, "g2": FINALIST_LABEL}
 
 
 def _validate(payload):
     return compare_answer.validate_payload(
         payload,
-        labels=LABELS,
+        group_keys=GROUP_KEYS,
         alias_map=ALIAS_MAP,
         report_group=REPORT_GROUP,
         retrieved=["RPT0001", "RPT0002"],
@@ -80,7 +81,7 @@ def _validate(payload):
 
 
 def test_the_schema_has_paired_contrasts_instead_of_differences():
-    schema = compare_answer.build_schema(LABELS)
+    schema = compare_answer.build_schema(list(GROUP_KEYS))
 
     assert set(schema["required"]) == {"groups", "contrasts"}
     assert "differences" not in schema["properties"]
@@ -131,7 +132,7 @@ def test_a_contrast_missing_one_side_is_dropped():
 
 def test_a_contrast_with_a_duplicate_label_is_dropped():
     contrast = _contrast("kedalaman validasi")
-    contrast["sides"].append(_side(AWARD_LABEL, "Poin kedua.", ["LAP1"]))
+    contrast["sides"].append(_side("g1", "Poin kedua.", ["LAP1"]))
 
     validation = _validate(_validation_payload([contrast]))
 
@@ -139,9 +140,9 @@ def test_a_contrast_with_a_duplicate_label_is_dropped():
     assert validation.incidents["contrast_invalid"] == 1
 
 
-def test_an_unknown_side_label_is_dropped():
+def test_an_unknown_side_key_is_dropped():
     contrast = _contrast("kedalaman validasi")
-    contrast["sides"][1]["label"] = "tim lain"
+    contrast["sides"][1]["group"] = "g9"
 
     validation = _validate(_validation_payload([contrast]))
 
@@ -302,16 +303,16 @@ def _type_pipeline(structured_payload):
 
 def test_a_competition_type_comparison_uses_the_two_type_labels():
     payload = {
-        "groups": [
-            {"label": "Business Plan", "points": []},
-            {"label": "Business Case", "points": []},
-        ],
+        "groups": {
+            "g1": [{"text": "Data primer terbatas.", "cite": ["LAP1"]}],
+            "g2": [{"text": "Data sekunder dominan.", "cite": ["LAP2"]}],
+        },
         "contrasts": [
             {
                 "dimension": "kesiapan data",
                 "sides": [
-                    _side("Business Plan", "Data primer terbatas.", ["LAP1"]),
-                    _side("Business Case", "Data sekunder dominan.", ["LAP2"]),
+                    _side("g1", "Data primer terbatas.", ["LAP1"]),
+                    _side("g2", "Data sekunder dominan.", ["LAP2"]),
                 ],
             }
         ],
@@ -330,12 +331,14 @@ def test_a_competition_type_comparison_uses_the_two_type_labels():
     call = [item for item in llm.calls if item.get("response_format")][0]
     enum = call["response_format"]["json_schema"]["schema"]["properties"]["contrasts"][
         "items"
-    ]["properties"]["sides"]["items"]["properties"]["label"]["enum"]
-    # The schema enumerates the configured type labels; only the two groups that
-    # actually have documents may form a contrast.
-    assert enum == [
-        group["label"] for group in config.COMPARISON_GROUPS["competition_type"]
+    ]["properties"]["sides"]["items"]["properties"]["group"]["enum"]
+    # Fix pack 9: the schema carries keys for the two groups that have documents
+    # (Business Plan, Business Case), never the empty configured types.
+    assert enum == ["g1", "g2"]
+    keys = call["response_format"]["json_schema"]["schema"]["properties"]["groups"][
+        "required"
     ]
+    assert keys == ["g1", "g2"]
     assert result.debug.incidents.get("contrast_invalid", 0) == 0
     assert "LAP" not in result.answer
 
@@ -353,7 +356,7 @@ def test_the_free_text_addendum_carries_the_fidelity_rules():
 def test_the_compare_addendum_carries_the_fidelity_rules():
     addendum = prompts.COMPARE_CITATION_ADDENDUM
 
-    assert prompts.COMPARE_ADDENDUM_VERSION == "2.2"
+    assert prompts.COMPARE_ADDENDUM_VERSION == "2.3"
     assert '"komunikasi terkendala" bukan "kurangnya kolaborasi"' in addendum
     assert "Jangan menyambung dua fakta" in addendum
 
@@ -392,16 +395,10 @@ def test_causal_samples_are_capped():
 
 
 def _type_groups():
-    return [
-        {
-            "label": "Business Plan",
-            "points": [{"text": "Data primer terbatas.", "cite": ["LAP1"]}],
-        },
-        {
-            "label": "Business Case",
-            "points": [{"text": "Data sekunder dominan.", "cite": ["LAP2"]}],
-        },
-    ]
+    return {
+        "g1": [{"text": "Data primer terbatas.", "cite": ["LAP1"]}],
+        "g2": [{"text": "Data sekunder dominan.", "cite": ["LAP2"]}],
+    }
 
 
 def test_the_pipeline_exposes_the_causal_metric_and_never_logs_it(caplog):

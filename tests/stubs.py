@@ -12,6 +12,39 @@ import config
 from core.llm_client import LLMClient, LLMResponseError, LLMResult, TokenUsage
 
 
+def keyed_compare_payload(groups, contrasts=None):
+    """
+    Test helper: turn label-keyed comparison groups into fix pack 9's shape.
+
+    The model returns g1, g2, ... and the backend maps them to labels, so a test
+    describes labels and this helper produces the wire payload. Keys follow the
+    order of the groups given, which is the config order in every fixture.
+    """
+    keys = {}
+    keyed = {}
+    for index, group in enumerate(groups, start=1):
+        key = f"g{index}"
+        keys[group["label"]] = key
+        keyed[key] = group["points"]
+
+    converted = []
+    for contrast in contrasts or []:
+        converted.append(
+            {
+                "dimension": contrast["dimension"],
+                "sides": [
+                    {
+                        "group": keys[side["label"]],
+                        "text": side["text"],
+                        "cite": side["cite"],
+                    }
+                    for side in contrast["sides"]
+                ],
+            }
+        )
+    return {"groups": keyed, "contrasts": converted}
+
+
 class WordCountTokenizer:
     """Deterministic offline token counter: one token per whitespace-separated word."""
 
@@ -201,6 +234,7 @@ class FakeLLM(LLMClient):
         json_mode: bool = False,
         response_format: Optional[Dict[str, Any]] = None,
         deadline: Optional[Any] = None,
+        queue_max_wait_seconds: Optional[float] = None,
     ) -> LLMResult:
         self.calls.append(
             {
@@ -212,6 +246,7 @@ class FakeLLM(LLMClient):
                 "json_mode": json_mode,
                 "response_format": response_format,
                 "deadline": deadline,
+                "queue_max_wait_seconds": queue_max_wait_seconds,
             }
         )
 

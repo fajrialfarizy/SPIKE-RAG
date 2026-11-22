@@ -24,7 +24,9 @@ from ingestion.repos.local import LocalDriveRepo, LocalSheetsRepo
 from scripts.make_dummy_corpus import generate_corpus
 from tests.stubs import FakeLLM
 
-pytestmark = pytest.mark.slow
+# These tests exercise retrieval and the free-prose answer path; fix pack 9's
+# structured path has its own offline suite in tests/test_fixpack9.py.
+pytestmark = [pytest.mark.slow, pytest.mark.usefixtures("legacy_answer_contract")]
 
 
 def analysis_json(search_query, mode="specific"):

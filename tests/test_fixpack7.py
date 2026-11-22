@@ -23,6 +23,8 @@ import config
 from core import prompts
 from core.answer_trimmer import trim_bullets
 from core.compare_answer import response_format
+
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
 from core.deadline import Deadline, DeadlineExceeded, QueueDeadlineExceeded
 from core.knowledge_base import StoredChunk
 from core.llm_client import GroqLLMClient, LLMConcurrencyLimiter, LLMRateLimitError

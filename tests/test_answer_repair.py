@@ -6,10 +6,14 @@ Both paths run through RagPipeline with FakeLLM, so no network or model weights
 are involved.
 """
 
+import pytest
+
 import config
 from core.knowledge_base import StoredChunk
 from core.pipeline import AnswerStatus, RagPipeline
 from tests.stubs import FakeKnowledgeBase, FakeLLM, RecordingEmbedder
+
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
 
 ID_QUESTION = "Apa saja saran pengembangan yang tercantum pada RPT0002?"
 

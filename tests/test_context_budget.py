@@ -15,6 +15,8 @@ from tests.stubs import (
     WordCountTokenizer,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
+
 
 def metadata(report_id, section="evaluasi_tim"):
     return {

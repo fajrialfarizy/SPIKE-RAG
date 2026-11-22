@@ -13,6 +13,8 @@ from core.knowledge_base import ChunkMatch
 from core.pipeline import RagPipeline
 from tests.stubs import FakeKnowledgeBase, FakeLLM, RecordingEmbedder
 
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
+
 
 def fake_pipeline():
     metadata = {

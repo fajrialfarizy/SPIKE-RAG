@@ -26,6 +26,8 @@ from tests.stubs import (
     WordCountTokenizer,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
+
 NAME = "Inovasi Bisnis Mahasiswa Nasional (IBMN) 2023"
 
 
@@ -250,26 +252,19 @@ def group_payload(compare_by="achievement_group"):
 
 
 def comparison_base(
-    matches, metadatas, cites=None, compare_by="achievement_group"
+    matches, metadatas, cites=None, compare_by="achievement_group", groups=None
 ):
     """Grouped comparison pipeline with a structured answer (fix pack J1)."""
-    structured = json.dumps(
-        {
-            "groups": [
-                {
-                    "label": "meraih penghargaan",
-                    "points": [
-                        {
-                            "text": "Tim juara memvalidasi masalah sebelum final.",
-                            "cite": list(cites or ("LAP1", "LAP2")),
-                        }
-                    ],
-                },
-                {"label": "belum juara (finalis)", "points": []},
-            ],
-            "contrasts": [],
-        }
-    )
+    payload = groups or {
+        "g1": [
+            {
+                "text": "Tim juara memvalidasi masalah sebelum final.",
+                "cite": list(cites or ("LAP1", "LAP2")),
+            }
+        ],
+        "g2": [],
+    }
+    structured = json.dumps({"groups": payload, "contrasts": []})
     llm = FakeLLM(
         json_responses=[group_payload(compare_by)],
         structured_responses=[structured],
@@ -383,17 +378,30 @@ def test_the_coverage_line_reports_shown_against_available_reports():
     assert result.answer.index(result.debug.coverage) < result.answer.index("**Sumber**")
 
 
-def test_a_group_without_data_is_stated_honestly():
+def test_a_group_without_data_is_not_counted_at_all():
     matches = [chunk_match(f"RPT100{i}", level="Juara 1") for i in range(1, 3)]
     metadatas = [metadata(f"RPT100{i}", level="Juara 1") for i in range(1, 3)]
-    pipeline, _ = comparison_base(matches, metadatas)
+    pipeline, _ = comparison_base(
+        matches,
+        metadatas,
+        groups={
+            "g1": [
+                {
+                    "text": "Tim juara memvalidasi masalah sebelum final.",
+                    "cite": ["LAP1", "LAP2"],
+                }
+            ]
+        },
+    )
 
     result = pipeline.run("Bandingkan tim juara dan belum juara.")
 
+    # Fix pack 9 (O2a): a group with no document is never rendered and never
+    # counted, so the sentence cannot claim "0 dari 0 laporan".
     assert result.debug.coverage == (
-        "Ringkasan ini didasarkan pada 2 dari 2 laporan meraih penghargaan dan "
-        "0 dari 0 laporan belum juara (finalis)."
+        "Ringkasan ini didasarkan pada 2 dari 2 laporan meraih penghargaan."
     )
+    assert "belum juara" not in result.answer
 
 
 def test_cross_report_without_grouping_uses_the_generic_coverage_line():

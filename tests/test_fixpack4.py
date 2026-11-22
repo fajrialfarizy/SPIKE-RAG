@@ -8,6 +8,8 @@ no network, no API key, no model weights.
 
 import json
 
+import pytest
+
 import config
 from core import compare_answer, prompts
 from core.citations import process_citations
@@ -18,7 +20,10 @@ from tests.stubs import (
     FilteringKnowledgeBase,
     RecordingEmbedder,
     WordCountTokenizer,
+    keyed_compare_payload,
 )
+
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
 
 AWARD = "Juara 1"
 FINALIST = "Finalis"
@@ -87,12 +92,14 @@ QUESTION = "Apa perbedaan pembelajaran tim juara dan tim belum juara?"
 
 
 def payload(groups, contrasts=None):
-    return json.dumps({"groups": groups, "contrasts": contrasts or []}, ensure_ascii=False)
+    return json.dumps(
+        keyed_compare_payload(groups, contrasts), ensure_ascii=False
+    )
 
 
 # -- J1a: the schema -------------------------------------------------------
-def test_the_schema_is_strict_and_has_no_optional_object():
-    schema = compare_answer.build_schema(["meraih penghargaan", "belum juara (finalis)"])
+def test_the_schema_is_strict_and_keyed_by_group():
+    schema = compare_answer.build_schema(["g1", "g2"])
 
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == {"groups", "contrasts"}
@@ -101,18 +108,16 @@ def test_the_schema_is_strict_and_has_no_optional_object():
     assert set(contrast_item["required"]) == {"dimension", "sides"}
     side_item = contrast_item["properties"]["sides"]["items"]
     assert side_item["additionalProperties"] is False
-    assert set(side_item["required"]) == {"label", "text", "cite"}
-    assert side_item["properties"]["label"]["enum"] == [
-        "meraih penghargaan",
-        "belum juara (finalis)",
-    ]
-    group_item = schema["properties"]["groups"]["items"]
-    assert group_item["additionalProperties"] is False
-    assert set(group_item["required"]) == {"label", "points"}
-    point_item = group_item["properties"]["points"]["items"]
+    assert set(side_item["required"]) == {"group", "text", "cite"}
+    assert side_item["properties"]["group"]["enum"] == ["g1", "g2"]
+    # Fix pack 9: groups is a keyed object with every key required, so the model
+    # never writes a group name and no group can be missing.
+    group_object = schema["properties"]["groups"]
+    assert group_object["additionalProperties"] is False
+    assert set(group_object["required"]) == {"g1", "g2"}
+    point_item = group_object["properties"]["g1"]["items"]
     assert point_item["additionalProperties"] is False
     assert set(point_item["required"]) == {"text", "cite"}
-    assert group_item["properties"]["label"]["enum"] == ["meraih penghargaan", "belum juara (finalis)"]
 
 
 def test_the_structured_call_uses_json_schema_and_the_compare_cap():
@@ -250,10 +255,10 @@ def test_a_point_with_only_unknown_or_cross_group_citations_is_dropped():
     assert "Klaim tanpa sumber valid." not in result.answer
     assert result.debug.incidents["unknown_alias"] == 1
     assert result.debug.incidents["cross_group_citation"] == 1
-    assert result.debug.incidents["uncited_point_dropped"] == 1
+    assert result.debug.incidents["point_uncited"] == 1
 
 
-def test_a_group_without_valid_points_gets_the_fixed_sentence():
+def test_a_group_without_valid_points_says_the_attempt_failed():
     pipeline, _ = comparison_pipeline(
         payload(
             [
@@ -268,27 +273,35 @@ def test_a_group_without_valid_points_gets_the_fixed_sentence():
 
     result = pipeline.run(QUESTION)
 
+    # Fix pack 9 (O2e): documents exist for the finalist group, so the answer may
+    # not claim there is no evidence. The sentence says the attempt failed, the
+    # contrasts are omitted, and the rendered group is counted as empty.
     assert "Tim belum juara (finalis)" in result.answer
-    assert config.COMPARE_EMPTY_GROUP in result.answer
+    assert config.COMPARE_GROUP_EMPTY_RETRY in result.answer
+    assert config.COMPARE_EMPTY_GROUP not in result.answer
+    assert config.COMPARE_CONTRASTS_HEADING not in result.answer
+    assert result.debug.incidents["group_empty"] == 1
 
 
-def test_an_unknown_label_is_ignored():
-    pipeline, _ = comparison_pipeline(
-        payload(
-            [
-                {
-                    "label": "meraih penghargaan",
-                    "points": [{"text": "Tim juara memvalidasi masalah.", "cite": ["LAP1"]}],
-                },
-                {"label": "tim lain", "points": [{"text": "Klaim.", "cite": ["LAP4"]}]},
-            ]
-        )
+def test_an_unknown_group_key_is_a_format_error():
+    payload_with_unknown_key = json.dumps(
+        {
+            "groups": {
+                "g1": [{"text": "Tim juara memvalidasi masalah.", "cite": ["LAP1"]}],
+                "g2": [],
+                "g9": [{"text": "Klaim.", "cite": ["LAP4"]}],
+            },
+            "contrasts": [],
+        }
     )
+    pipeline, _ = comparison_pipeline(payload_with_unknown_key)
 
     result = pipeline.run(QUESTION)
 
-    assert "tim lain" not in result.answer
-    assert result.debug.incidents["unknown_label"] == 1
+    # The schema only allows known keys; strict output makes an unknown key a
+    # contract violation, never renderable text.
+    assert result.status is AnswerStatus.TECHNICAL_ERROR
+    assert "Klaim." not in result.answer
 
 
 def test_no_alias_token_survives_in_the_rendered_text():

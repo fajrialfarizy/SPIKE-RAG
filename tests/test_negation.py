@@ -7,11 +7,15 @@ keeps a legitimate sentence as a hit, and never changes an answer.
 
 import json
 
+import pytest
+
 import config
 from core.knowledge_base import ChunkMatch
 from core.negation import negation_sentences, point_negation_counts, split_sentences
 from core.pipeline import AnswerStatus, RagPipeline
 from tests.stubs import FakeKnowledgeBase, FakeLLM, RecordingEmbedder
+
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
 
 
 def test_a_negated_statement_about_a_team_is_counted():

@@ -18,6 +18,8 @@ from core.llm_client import LLMUnavailableError
 from core.pipeline import AnswerStatus, RagPipeline
 from tests.stubs import FakeKnowledgeBase, FakeLLM, RecordingEmbedder
 
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
+
 QUESTION = "Apa saja kendala tim pada kompetisi business plan?"
 
 

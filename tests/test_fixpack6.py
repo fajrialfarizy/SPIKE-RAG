@@ -13,6 +13,8 @@ no network, no API key, no model weights.
 
 import json
 
+import pytest
+
 import config
 from core import compare_answer, prompts
 from core.analyzer import Analyzer
@@ -28,7 +30,10 @@ from tests.stubs import (
     FilteringKnowledgeBase,
     RecordingEmbedder,
     WordCountTokenizer,
+    keyed_compare_payload,
 )
+
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
 
 AWARD = "Juara 1"
 FINALIST = "Finalis"
@@ -94,7 +99,7 @@ def comparison_pipeline(structured_payload):
 
 def payload(groups, contrasts=None):
     return json.dumps(
-        {"groups": groups, "contrasts": contrasts or []}, ensure_ascii=False
+        keyed_compare_payload(groups, contrasts), ensure_ascii=False
     )
 
 
@@ -137,19 +142,18 @@ def test_the_configured_group_names_are_the_documented_ones():
     assert config.COMPARISON_GROUPS["competition_type"][0]["label"] == "Business Plan"
 
 
-def test_the_schema_enum_and_the_context_use_the_model_facing_names():
+def test_the_schema_keys_and_the_context_use_the_model_facing_names():
     pipeline, llm = comparison_pipeline(payload(groups_payload()))
 
     pipeline.run(QUESTION)
 
     call = [item for item in llm.calls if item.get("response_format")][0]
-    enum = call["response_format"]["json_schema"]["schema"]["properties"]["groups"][
-        "items"
-    ]["properties"]["label"]["enum"]
-    assert enum == [AWARD_LABEL, FINALIST_LABEL]
+    schema = call["response_format"]["json_schema"]["schema"]
+    assert set(schema["properties"]["groups"]["required"]) == {"g1", "g2"}
     assert f'<kelompok nama="{AWARD_LABEL}">' in call["user_prompt"]
     assert f'kelompok="{AWARD_LABEL}"' in call["user_prompt"]
-    assert f'- {AWARD_LABEL}: [LAP1]' in call["user_prompt"]
+    assert f"- g1 = {AWARD_LABEL}" in call["user_prompt"]
+    assert "- g1: [LAP1]" in call["user_prompt"]
 
 
 def test_the_heading_is_a_bold_display_label_on_its_own_line():
@@ -173,8 +177,8 @@ def test_the_heading_is_a_bold_display_label_on_its_own_line():
 def test_the_addendum_tells_the_model_not_to_restate_the_group():
     addendum = prompts.COMPARE_CITATION_ADDENDUM
 
-    assert prompts.COMPARE_ADDENDUM_VERSION == "2.2"
-    assert "(v2.2)" in addendum
+    assert prompts.COMPARE_ADDENDUM_VERSION == "2.3"
+    assert "(v2.3)" in addendum
     assert 'Jangan memulai poin dengan "Tim juara"' in addendum
     assert "berbeda pada dimensi yang SAMA" not in addendum
     assert "dimensi yang SAMA" in addendum
@@ -249,7 +253,7 @@ def test_the_compare_addendum_limits_contrasts_to_two():
     assert config.COMPARE_POINTS_PER_GROUP_MAX == 3
     addendum = prompts.COMPARE_CITATION_ADDENDUM
     assert "paling banyak 3 poin per kelompok, 2 contrasts" in addendum
-    assert "dimensi paling banyak 8 kata" in addendum
+    assert "dimensi paling banyak 6 kata" in addendum
     assert "teks setiap sisi paling banyak 35 kata" in addendum
 
 

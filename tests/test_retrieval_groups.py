@@ -14,6 +14,8 @@ from core.retriever import Retriever, RetrievalError, merge_filter_dicts
 from enums import AWARD_WINNER_LEVELS, QueryMode
 from tests.stubs import FakeLLM, FilteringKnowledgeBase, RecordingEmbedder, WordCountTokenizer
 
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
+
 
 def metadata(report_id, level="Finalis", competition_type="Business Plan"):
     return {
@@ -214,20 +216,14 @@ def structured_payload():
     """One valid comparison answer citing both groups (fix pack J1)."""
     return json.dumps(
         {
-            "groups": [
-                {
-                    "label": "meraih penghargaan",
-                    "points": [
-                        {"text": "Tim juara fokus pada validasi pasar.", "cite": ["LAP1"]}
-                    ],
-                },
-                {
-                    "label": "belum juara (finalis)",
-                    "points": [
-                        {"text": "Tim finalis kekurangan waktu uji coba.", "cite": ["LAP2"]}
-                    ],
-                },
-            ],
+            "groups": {
+                "g1": [
+                    {"text": "Tim juara fokus pada validasi pasar.", "cite": ["LAP1"]}
+                ],
+                "g2": [
+                    {"text": "Tim finalis kekurangan waktu uji coba.", "cite": ["LAP2"]}
+                ],
+            },
             "contrasts": [],
         }
     )
@@ -263,12 +259,22 @@ def test_the_pipeline_passes_the_group_status_to_the_answer_model():
     assert "- belum juara (finalis): 1 laporan" in answer_prompt
 
 
-def test_an_empty_group_reaches_the_answer_prompt_as_a_limitation():
+def test_an_empty_group_is_not_in_the_answer_contract():
     matches = [match("RPT0001", level="Juara 1")]
     llm = FakeLLM(
         json_responses=[cross_payload("achievement_group")],
-        structured_responses=[structured_payload()],
-        text_responses=["Hanya tim juara yang tersedia [LAP1]."],
+        structured_responses=[
+            json.dumps(
+                {
+                    "groups": {
+                        "g1": [
+                            {"text": "Tim juara fokus pada validasi pasar.", "cite": ["LAP1"]}
+                        ]
+                    },
+                    "contrasts": [],
+                }
+            )
+        ],
     )
     pipeline = RagPipeline(
         knowledge_base=FilteringKnowledgeBase(matches=matches),
@@ -280,4 +286,9 @@ def test_an_empty_group_reaches_the_answer_prompt_as_a_limitation():
     result = pipeline.run("Bandingkan pembelajaran tim yang juara dan belum juara.")
 
     assert result.status is AnswerStatus.ANSWERED
-    assert "tidak ada dokumen yang cocok" in llm.calls[1]["user_prompt"]
+    # Fix pack 9 (O2a): the group without documents is not in the schema, not in
+    # the hint, and not in the answer.
+    assert "tidak ada dokumen yang cocok" not in llm.calls[1]["user_prompt"]
+    schema = llm.calls[1]["response_format"]["json_schema"]["schema"]
+    assert schema["properties"]["groups"]["required"] == ["g1"]
+    assert "belum juara" not in result.answer
