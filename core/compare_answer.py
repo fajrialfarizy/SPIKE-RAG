@@ -1,17 +1,23 @@
 """
-Structured comparison answers (fix pack J1, keyed in fix pack 9).
+Structured comparison answers (fix pack J1, keyed in fix pack 9, by reference in
+fix pack 10).
 
 The comparison path asks the model for JSON only:
 
     {"groups": {"g1": [{"text": ..., "cite": [...]}], "g2": [...]},
-     "contrasts": [{"dimension": ...,
-                    "sides": [{"group": "g1", "text": ..., "cite": [...]}]}]}
+     "contrasts": [{"dimension": ..., "pick": {"g1": 1, "g2": 2}}]}
 
 Fix pack 9 replaced label strings with model-facing keys (g1, g2, ...): the model
 never writes a group name, so it cannot invent one, and the backend owns the
 mapping to the configured label. All keys are required (strict mode), but only
 the groups that were requested and actually have documents are in the schema, so
 an empty group is never rendered or counted.
+
+Fix pack 10 (R2) replaced contrast sides with picks: a contrast names the 1-based
+number of one point per group, exactly as the model wrote those points. The
+model writes no contrast text at all, so the backend renders the VALIDATED point
+text and citations. The real run repeated the group points on the contrast sides
+and added merged claims there.
 
 The model never writes a heading, a citation, a count or the Sumber block:
 
@@ -24,10 +30,13 @@ The model never writes a heading, a citation, a count or the Sumber block:
   group membership and the citation ceilings, and counts each rejection.
 - ``render_answer`` writes the Markdown the student sees.
 
-A point or contrast side over its citation ceiling is DROPPED, never cut: the
-real run cut three cited aliases to two and attributed a claim to the wrong
-reports. Invalid JSON, a truncated completion or a payload that is not an object
-is a technical error and is never retried.
+A point over its citation ceiling is DROPPED, never cut: the real run cut three
+cited aliases to two and attributed a claim to the wrong reports. A contrast
+whose pick points at a dropped or out-of-range point is dropped with a reason
+code, because it has no validated text to render.
+
+Invalid JSON, a truncated completion or a payload that is not an object is a
+technical error and is never retried.
 """
 
 from __future__ import annotations
@@ -35,7 +44,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import config
 
@@ -62,7 +71,7 @@ class CompareSection:
 
 @dataclass(frozen=True)
 class CompareContrastSide:
-    """One group's side of a contrast: text plus this group's report ids."""
+    """One group's side of a contrast: validated point text and report ids."""
 
     label: str
     text: str
@@ -84,6 +93,10 @@ class CompareValidation:
     incidents: Dict[str, int] = field(default_factory=dict)
     cited_report_ids: List[str] = field(default_factory=list)
     reports_cited_per_group: Dict[str, int] = field(default_factory=dict)
+    # Fix pack 10 (R6): every group point in the model's own order, with its
+    # 1-based index and whether it survived validation, so a smoke run can be
+    # checked against the picks.
+    points_by_key: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
 
     @property
     def is_empty(self) -> bool:
@@ -93,6 +106,19 @@ class CompareValidation:
     def group_empty(self) -> List[str]:
         """Groups that produced no valid point; every section has documents."""
         return [section.label for section in self.sections if not section.points]
+
+
+@dataclass(frozen=True)
+class _PointResult:
+    """One raw point after validation; ``reason`` is empty when it was kept."""
+
+    text: str
+    report_ids: List[str] = field(default_factory=list)
+    reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return not self.reason
 
 
 def _point_schema() -> Dict[str, Any]:
@@ -107,15 +133,11 @@ def _point_schema() -> Dict[str, Any]:
     }
 
 
-def _side_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
+def _pick_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
     return {
         "type": "object",
-        "properties": {
-            "group": {"type": "string", "enum": list(group_keys)},
-            "text": {"type": "string"},
-            "cite": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["group", "text", "cite"],
+        "properties": {key: {"type": "integer"} for key in group_keys},
+        "required": list(group_keys),
         "additionalProperties": False,
     }
 
@@ -125,9 +147,9 @@ def _contrast_schema(group_keys: Sequence[str]) -> Dict[str, Any]:
         "type": "object",
         "properties": {
             "dimension": {"type": "string"},
-            "sides": {"type": "array", "items": _side_schema(group_keys)},
+            config.COMPARE_CONTRAST_PICK: _pick_schema(group_keys),
         },
-        "required": ["dimension", "sides"],
+        "required": ["dimension", config.COMPARE_CONTRAST_PICK],
         "additionalProperties": False,
     }
 
@@ -182,6 +204,7 @@ def parse_payload(raw: str) -> Dict[str, Any]:
 
 _ALIAS_TOKEN = re.compile(r"[\[\(]?\s*LAP[0-9]{1,3}\s*[\]\)]?", re.IGNORECASE)
 _REPORT_ID_TOKEN = re.compile(r"[\[\(]?\s*RPT[0-9]{4,}\s*[\]\)]?", re.IGNORECASE)
+_DIMENSION_TRIM = " .,;:!?()[]{}\"'"
 
 
 def _clean_text(
@@ -210,7 +233,8 @@ def _clean_text(
 
 
 def _normalize_alias(value: Any) -> str:
-    return str(value or "").strip().strip("[]() ").upper()
+    """Brackets, spaces and case never change which alias the model meant."""
+    return str(value or "").strip().strip("[]() \t").upper()
 
 
 def _resolve_cites(
@@ -222,7 +246,7 @@ def _resolve_cites(
     retrieved: Sequence[str],
     incidents: Dict[str, int],
 ) -> List[str]:
-    """Resolved report ids for one point or side, in the model's own order."""
+    """Resolved report ids for one point, in the model's own order."""
     if isinstance(raw_cites, str):
         raw_cites = [raw_cites]
     if not isinstance(raw_cites, list):
@@ -251,21 +275,21 @@ def _clean_point(
     retrieved: Sequence[str],
     incidents: Dict[str, int],
     label: Optional[str] = None,
-) -> Optional[ComparePoint]:
+) -> _PointResult:
     """
-    One bullet after validation, or None when it cannot be traced to a report.
+    One bullet after validation, with the reason it was dropped if it was.
 
     ``allowed_reports`` maps a report id to the comparison group it belongs to;
     a citation outside that group is removed and counted.
     """
     if not isinstance(raw, dict):
         incidents["malformed_point"] += 1
-        return None
+        return _PointResult(text="", reason="malformed_point")
 
     text = _clean_text(raw.get("text"), incidents)
     if not text:
         incidents["empty_point"] += 1
-        return None
+        return _PointResult(text="", reason="empty_point")
 
     resolved = _resolve_cites(
         raw.get("cite"),
@@ -278,40 +302,59 @@ def _clean_point(
 
     if len(resolved) > config.COMPARE_CITE_MAX:
         incidents["cite_over_limit_dropped"] += 1
-        return None
+        return _PointResult(text=text, report_ids=resolved, reason="cite_over_limit_dropped")
 
     if len(resolved) < config.COMPARE_CITE_MIN:
         incidents["point_uncited"] += 1
-        return None
+        return _PointResult(text=text, reason="point_uncited")
 
-    return ComparePoint(text=text, report_ids=resolved)
+    return _PointResult(text=text, report_ids=resolved)
+
+
+def _normalize_dimension(dimension: str) -> str:
+    """Case, whitespace and edge punctuation removed; the WHOLE string compared."""
+    return " ".join(str(dimension or "").split()).casefold().strip(_DIMENSION_TRIM)
+
+
+_GENERIC_DIMENSIONS = frozenset(
+    _normalize_dimension(item) for item in config.COMPARE_GENERIC_DIMENSIONS
+)
 
 
 def _is_generic_dimension(dimension: str) -> bool:
-    """True for a dimension that names no concrete topic (fix pack 9, O2d)."""
-    words = [word.strip(",.;:").casefold() for word in dimension.split()]
-    return any(word in config.COMPARE_GENERIC_DIMENSIONS for word in words)
+    """
+    True when the dimension names no concrete topic (fix pack 10, R2d).
+
+    The full normalized dimension is compared for EXACT equality with the
+    configured list, never word by word: "Kendala Keuangan" is a concrete topic
+    and must pass, while "Kendala" does not.
+    """
+    return _normalize_dimension(dimension) in _GENERIC_DIMENSIONS
 
 
 def _clean_contrast(
     raw: Any,
     *,
     group_keys: Mapping[str, str],
-    allowed_reports: Mapping[str, str],
-    alias_map: Mapping[str, str],
-    retrieved: Sequence[str],
+    points_by_key: Mapping[str, List[_PointResult]],
     incidents: Dict[str, int],
 ) -> Optional[CompareContrast]:
     """
-    One contrast with exactly one supported side per group, or None.
+    One contrast resolved from the model's picks, or None with a reason code.
 
-    Missing, duplicated or unknown keys drop the whole contrast, as does a
-    generic dimension or a side that ends up with no citation after citations
-    outside its own group are removed. A contrast beyond the configured limit is
-    counted as truncated, not as invalid.
+    Every group key must be picked, each pick is a 1-based index into that
+    group's points AS THE MODEL WROTE THEM, and the picked point must have
+    survived validation. A generic or empty dimension is rendered with the
+    neutral label and counted, never dropped.
     """
-    if not isinstance(raw, dict):
+
+    def reject(reason: str) -> None:
         incidents["contrast_invalid"] += 1
+        key = f"contrast_invalid_{reason}"
+        incidents[key] = incidents.get(key, 0) + 1
+
+    if not isinstance(raw, dict):
+        reject("malformed")
         return None
 
     dimension = _clean_text(
@@ -320,67 +363,49 @@ def _clean_contrast(
         max_words=config.COMPARE_DIMENSION_MAX_WORDS,
         limit_incident="dimension_too_long",
     )
-    if not dimension:
-        incidents["contrast_invalid"] += 1
+    normalized = _normalize_dimension(dimension)
+    if not normalized or normalized in _GENERIC_DIMENSIONS:
+        incidents["generic_dimension"] += 1
+        dimension = config.COMPARE_NEUTRAL_DIMENSION
+
+    pick = raw.get(config.COMPARE_CONTRAST_PICK)
+    if not isinstance(pick, dict):
+        reject("pick_malformed")
         return None
-    if _is_generic_dimension(dimension):
-        incidents["contrast_invalid"] += 1
+    missing = [key for key in group_keys if key not in pick]
+    if missing:
+        reject("pick_missing")
+        return None
+    unknown = [key for key in pick if key not in group_keys]
+    if unknown:
+        reject("pick_unknown")
         return None
 
-    raw_sides = raw.get("sides")
-    if not isinstance(raw_sides, list):
-        incidents["contrast_invalid"] += 1
-        return None
-
-    by_key: Dict[str, CompareContrastSide] = {}
-    for raw_side in raw_sides:
-        if not isinstance(raw_side, dict):
-            incidents["contrast_invalid"] += 1
+    sides: List[CompareContrastSide] = []
+    for key, label in group_keys.items():
+        value = pick.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            reject("pick_type")
             return None
-        key = str(raw_side.get("group") or "").strip()
-        if key not in group_keys or key in by_key:
-            incidents["contrast_invalid"] += 1
+        results = points_by_key.get(key, [])
+        if value < 1 or value > len(results):
+            reject("pick_range")
             return None
-        label = group_keys[key]
-
-        text = _clean_text(
-            raw_side.get("text"),
-            incidents,
-            max_words=config.COMPARE_CONTRAST_TEXT_MAX_WORDS,
-            limit_incident="contrast_text_too_long",
+        result = results[value - 1]
+        if not result.ok:
+            # The picked point was dropped during validation, so the contrast
+            # has no validated text to stand on.
+            reject("pick_dropped")
+            return None
+        sides.append(
+            CompareContrastSide(
+                label=label,
+                text=result.text,
+                report_ids=list(result.report_ids),
+            )
         )
-        if not text:
-            incidents["contrast_invalid"] += 1
-            return None
 
-        resolved = _resolve_cites(
-            raw_side.get("cite"),
-            label=label,
-            allowed_reports=allowed_reports,
-            alias_map=alias_map,
-            retrieved=retrieved,
-            incidents=incidents,
-        )
-
-        # Fix pack 9 (O2c): a side over its ceiling is dropped, never cut.
-        if len(resolved) > config.COMPARE_CONTRAST_CITE_MAX:
-            incidents["cite_over_limit_dropped"] += 1
-            return None
-
-        if not resolved:
-            incidents["contrast_invalid"] += 1
-            return None
-
-        by_key[key] = CompareContrastSide(label=label, text=text, report_ids=resolved)
-
-    if set(by_key) != set(group_keys):
-        incidents["contrast_invalid"] += 1
-        return None
-
-    return CompareContrast(
-        dimension=dimension,
-        sides=[by_key[key] for key in group_keys],
-    )
+    return CompareContrast(dimension=dimension, sides=sides)
 
 
 def validate_payload(
@@ -407,7 +432,7 @@ def validate_payload(
         "contrast_invalid": 0,
         "contrast_truncated": 0,
         "dimension_too_long": 0,
-        "contrast_text_too_long": 0,
+        "generic_dimension": 0,
     }
 
     raw_groups = payload.get("groups")
@@ -423,16 +448,19 @@ def validate_payload(
     if missing:
         raise CompareFormatError("The comparison answer is missing a group key.")
 
+    points_by_key: Dict[str, List[_PointResult]] = {}
     by_label: Dict[str, List[ComparePoint]] = {
         label: [] for label in group_keys.values()
     }
     for key, label in group_keys.items():
         raw_points = raw_groups.get(key)
+        results: List[_PointResult] = []
         if not isinstance(raw_points, list):
             incidents["malformed_point"] += 1
+            points_by_key[key] = results
             continue
         for raw_point in raw_points:
-            point = _clean_point(
+            result = _clean_point(
                 raw_point,
                 allowed_reports=report_group,
                 alias_map=alias_map,
@@ -440,12 +468,19 @@ def validate_payload(
                 incidents=incidents,
                 label=label,
             )
-            if point is None:
-                continue
-            if len(by_label[label]) >= config.COMPARE_POINTS_PER_GROUP_MAX:
+            if result.ok and len(by_label[label]) >= config.COMPARE_POINTS_PER_GROUP_MAX:
                 incidents["points_over_limit"] += 1
-                continue
-            by_label[label].append(point)
+                result = _PointResult(
+                    text=result.text,
+                    report_ids=result.report_ids,
+                    reason="points_over_limit",
+                )
+            if result.ok:
+                by_label[label].append(
+                    ComparePoint(text=result.text, report_ids=list(result.report_ids))
+                )
+            results.append(result)
+        points_by_key[key] = results
 
     contrasts: List[CompareContrast] = []
     raw_contrasts = payload.get("contrasts")
@@ -457,15 +492,16 @@ def validate_payload(
             contrast = _clean_contrast(
                 raw_contrast,
                 group_keys=group_keys,
-                allowed_reports=report_group,
-                alias_map=alias_map,
-                retrieved=retrieved,
+                points_by_key=points_by_key,
                 incidents=incidents,
             )
             if contrast is not None:
                 contrasts.append(contrast)
     elif raw_contrasts is not None:
         incidents["contrast_invalid"] += 1
+        incidents["contrast_invalid_malformed"] = (
+            incidents.get("contrast_invalid_malformed", 0) + 1
+        )
 
     sections = [
         CompareSection(label=label, points=by_label[label])
@@ -489,12 +525,26 @@ def validate_payload(
                 if report_id not in cited:
                     cited.append(report_id)
 
+    points_debug: Dict[str, List[Dict[str, Any]]] = {}
+    for key, results in points_by_key.items():
+        points_debug[key] = [
+            {
+                "index": index,
+                "text": result.text,
+                "cites": list(result.report_ids),
+                "kept": result.ok,
+                "reason": result.reason,
+            }
+            for index, result in enumerate(results, start=1)
+        ]
+
     return CompareValidation(
         sections=sections,
         contrasts=contrasts,
         incidents={key: value for key, value in incidents.items() if value},
         cited_report_ids=cited,
         reports_cited_per_group=reports_per_group,
+        points_by_key=points_debug,
     )
 
 

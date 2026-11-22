@@ -436,6 +436,12 @@ ANSWER_MAX_BULLETS = 6
 # any answer above ANSWER_MAX_BULLETS with the same per-report cap (no retry, no
 # extra model call).
 ANSWER_MAX_BULLETS_PER_REPORT = 2
+# Fix pack 10 (R1): "Apa saja saran pengembangan pada RPT0002?" asks for EVERY
+# item of one report, and the 2-points-per-report cap hid the third one. On the
+# exact report-id route, and whenever the context holds a single report, the
+# per-report cap is this value instead; the total cap (ANSWER_MAX_BULLETS) still
+# applies, so one report can fill the whole answer.
+ANSWER_ID_ROUTE_MAX_POINTS_PER_REPORT = 6
 
 # Analyzer (LLM call #1)
 # Fix pack 8 (N4): the answer's post-processing is timed per stage so a slow
@@ -873,16 +879,16 @@ COMPARE_POINTS_PER_GROUP_MAX = 3
 COMPARE_CONTRASTS_MAX = 2
 COMPARE_POINT_MAX_WORDS = 40
 COMPARE_DIMENSION_MAX_WORDS = 6
-COMPARE_CONTRAST_TEXT_MAX_WORDS = 35
 COMPARE_CITE_MIN = 1
 COMPARE_CITE_MAX = 2
-# A contrast side may rest on up to three of its own group's reports, because a
-# side summarizes the group rather than one fact. Exceeding the limit drops the
-# side (and its contrast) instead of silently cutting the list: the real run cut
-# three aliases to two and attributed a claim to the wrong reports.
-COMPARE_CONTRAST_CITE_MAX = 3
-# Fix pack 9 (O2d): a dimension must name a concrete topic. These generic words
-# describe no dimension a reader could compare.
+# Fix pack 10 (R2d): the model picks a contrast by NUMBER (see
+# COMPARE_CONTRAST_PICK), so the backend renders the validated point text and the
+# validated citations. A contrast never carries text of its own, which removes
+# the repeated claims the real run produced on the Q3/Q4 contrast sides.
+# A dimension is compared against this list as a WHOLE normalized string, never
+# word by word: "Kendala Keuangan" is concrete, "Kendala" is not. A generic or
+# empty dimension is not dropped; the backend renders the neutral label below
+# and counts generic_dimension (non-blocking).
 COMPARE_GENERIC_DIMENSIONS = (
     "pembelajaran",
     "kendala",
@@ -891,11 +897,17 @@ COMPARE_GENERIC_DIMENSIONS = (
     "lainnya",
     "hal",
     "aspek",
+    "perbandingan",
 )
+COMPARE_NEUTRAL_DIMENSION = "Perbandingan"
 # Model-facing group keys (fix pack 9, O2b): the model returns g1, g2, ... and
 # the backend maps them to labels, so it can never invent a group name.
 COMPARE_GROUP_KEY_TEMPLATE = "g{index}"
 COMPARE_GROUP_KEY_LINE = "- {key} = {label}"
+# Fix pack 10 (R2b): a contrast names the 1-based number of one point per group,
+# as the model wrote those points. The backend maps the number to the validated
+# point and drops the contrast when that point did not survive validation.
+COMPARE_CONTRAST_PICK = "pick"
 # Fix pack 8: the backend writes the group heading in bold, followed by a blank
 # line, so a group name reads as a heading instead of a stray prose line.
 COMPARE_GROUP_HEADING_TEMPLATE = "**{label}**"
@@ -975,6 +987,8 @@ NEGATION_SENTENCE_SPLIT_PATTERN = r"(?<=[.!?])\s+"
 # Non-blocking causal-connector metric (fix pack 8, N2b). It measures how many
 # answer sentences join two facts with a link the source may not state. It never
 # changes an answer; samples stay in the debug object.
+# Fix pack 10 (R3b): the real run joined two separately sourced facts with
+# "mengakibatkan", which was not in the list.
 CAUSAL_CONNECTORS = (
     "sehingga",
     "karena",
@@ -982,8 +996,86 @@ CAUSAL_CONNECTORS = (
     "membuat",
     "memengaruhi",
     "menyebabkan",
+    "mengakibatkan",
+    "berakibat",
 )
 CAUSAL_SAMPLE_LIMIT = 5
+
+# Fix pack 10 (R3b): more non-blocking wording metrics. They cannot detect a
+# verb-strength error or an invented causal link (only a human can); they are a
+# rough signal for Phase 4 rating. No answer is changed or blocked by them.
+# A phrase that states a lesson or an interpretation rather than a document fact.
+INTERPRETIVE_PHRASES = (
+    "mengajarkan",
+    "pentingnya",
+    "menunjukkan nilai",
+    "menyoroti pentingnya",
+    "menegaskan pentingnya",
+    "membuktikan",
+    "memberi pelajaran",
+)
+# A verb stronger than the source usually states it ("kurang menggali" written
+# as "mengabaikan").
+STRONG_VERBS = (
+    "mengabaikan",
+    "gagal",
+    "tidak mampu",
+    "tidak berhasil",
+    "mengorbankan",
+    "menguasai",
+)
+WORDING_SAMPLE_LIMIT = 5
+
+# Fix pack 10 (R3b): support_overlap is the share of a point's content words
+# found in the text of the reports that point cites. Content words are lowercased
+# tokens of at least SUPPORT_MIN_WORD_CHARS characters that are not stopwords.
+# The threshold only flags a point for human review; nothing is blocked.
+SUPPORT_MIN_WORD_CHARS = 4
+SUPPORT_OVERLAP_MIN = 0.5
+SUPPORT_STOPWORDS = (
+    "adalah",
+    "agar",
+    "akan",
+    "antara",
+    "atau",
+    "bagi",
+    "bahwa",
+    "banyak",
+    "belum",
+    "bisa",
+    "dalam",
+    "dan",
+    "dapat",
+    "dari",
+    "dengan",
+    "juga",
+    "karena",
+    "kepada",
+    "kini",
+    "kurang",
+    "lebih",
+    "masih",
+    "mereka",
+    "namun",
+    "oleh",
+    "para",
+    "pada",
+    "saat",
+    "sangat",
+    "serta",
+    "setelah",
+    "sehingga",
+    "seperti",
+    "sudah",
+    "telah",
+    "tentang",
+    "terhadap",
+    "tidak",
+    "untuk",
+)
+SUPPORT_SAMPLE_LIMIT = 5
+# A debug sample keeps this many characters of the point it flags.
+SUPPORT_SAMPLE_TEXT_CHARS = 160
 
 # Operational logging for the app layer (metadata only).
 APP_LOG_FILE_PREFIX = "app"

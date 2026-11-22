@@ -182,8 +182,17 @@ def validate_payload(
     *,
     alias_map: Mapping[str, str],
     retrieved: Sequence[str],
+    max_points_per_report: int = config.ANSWER_MAX_BULLETS_PER_REPORT,
 ) -> StructuredAnswerValidation:
-    """Validate every point and citation; never render unvalidated text."""
+    """
+    Validate every point and citation; never render unvalidated text.
+
+    Fix pack 10 (R1): ``max_points_per_report`` is the ordinary breadth cap, and
+    the pipeline raises it to ANSWER_ID_ROUTE_MAX_POINTS_PER_REPORT when the
+    question names an explicit report (or the context holds one report), because
+    such a question asks for every item the report states. The total cap always
+    applies.
+    """
     incidents = {
         "unknown_alias": 0,
         "point_uncited": 0,
@@ -220,7 +229,7 @@ def validate_payload(
         if point is None:
             continue
         primary = point.report_ids[0]
-        if per_report.get(primary, 0) >= config.ANSWER_MAX_BULLETS_PER_REPORT:
+        if per_report.get(primary, 0) >= max_points_per_report:
             dropped_points += 1
             continue
         if len(points) >= config.ANSWER_MAX_BULLETS:

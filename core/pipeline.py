@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import config
-from core import compare_answer, prompts, structured_answer
+from core import compare_answer, prompts, structured_answer, wording
 from core.analyzer import Analyzer
 from core.answer_trimmer import trim_bullets
 from core.causal import causal_connectors
@@ -126,6 +126,14 @@ class DebugInfo:
     reports_cited_per_group: Dict[str, int] = field(default_factory=dict)
     # Fix pack 9 (O2b): model-facing group key -> configured label.
     group_keys: Dict[str, str] = field(default_factory=dict)
+    # Fix pack 10 (R6): every comparison point as the model wrote it, numbered
+    # from 1, so a smoke run can be checked against the contrast picks.
+    compare_points: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    # Fix pack 10 (R3b): non-blocking wording metrics. Samples stay debug-only.
+    wording: Dict[str, Any] = field(default_factory=dict)
+    support: Dict[str, Any] = field(default_factory=dict)
+    # Fix pack 10 (R4): distinct reports the final answer cites, every mode.
+    reports_cited: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -163,6 +171,10 @@ class DebugInfo:
             "dropped_points": self.dropped_points,
             "reports_cited_per_group": self.reports_cited_per_group,
             "group_keys": self.group_keys,
+            "compare_points": self.compare_points,
+            "wording": self.wording,
+            "support": self.support,
+            "reports_cited": self.reports_cited,
         }
 
 
@@ -347,6 +359,9 @@ class RagPipeline:
             "dropped_points": 0,
             "reports_cited_per_group": {},
             "group_keys": {},
+            "compare_points": {},
+            "wording": {},
+            "support": {},
             "post_phases": {},
         }
 
@@ -416,6 +431,10 @@ class RagPipeline:
                 dropped_points=int(state["dropped_points"]),
                 reports_cited_per_group=dict(state["reports_cited_per_group"]),
                 group_keys=dict(state["group_keys"]),
+                compare_points=dict(state["compare_points"]),
+                wording=dict(state["wording"]),
+                support=dict(state["support"]),
+                reports_cited=len(dict.fromkeys(cited or [])),
             )
             logger.info(
                 "chat_request status=%s mode=%s route=%s chunks=%d latency_ms=%.1f "
@@ -706,6 +725,38 @@ class RagPipeline:
         )
 
     @staticmethod
+    def _report_texts(chunks: List[RetrievedChunk]) -> Dict[str, str]:
+        """Retrieved text per report, for the lexical support metric (R3b)."""
+        grouped: Dict[str, List[str]] = {}
+        for chunk in chunks:
+            grouped.setdefault(chunk.report_id, []).append(chunk.document or "")
+        return {report_id: " ".join(parts) for report_id, parts in grouped.items()}
+
+    def _measure_wording(
+        self,
+        state: Dict[str, Any],
+        answer_text: str,
+        points: List[Dict[str, Any]],
+        chunks: List[RetrievedChunk],
+    ) -> None:
+        """
+        Fix pack 10 (R3b): non-blocking wording metrics for the debug object.
+
+        Nothing here changes an answer: they exist to point a human rater at
+        suspicious points in Phase 4.
+        """
+        started = time.perf_counter()
+        state["wording"] = {
+            "interpretive": wording.interpretive_phrases(answer_text),
+            "strong_verbs": wording.strong_verbs(answer_text),
+        }
+        state["support"] = wording.support_overlap(points, self._report_texts(chunks))
+        low = int(state["support"].get("low_support_points") or 0)
+        if low:
+            state["incidents"]["low_support_points"] = low
+        self._mark(state, "metrics", started)
+
+    @staticmethod
     def _rendered_citations(answer_text: str, bundle: Any) -> List[str]:
         """Cited reports read from the FINAL rendered text only (fix pack 9)."""
         return process_citations(
@@ -959,6 +1010,7 @@ class RagPipeline:
             validation, compare_by, degraded=degraded
         )
         state["reports_cited_per_group"] = dict(validation.reports_cited_per_group)
+        state["compare_points"] = dict(validation.points_by_key)
         self._mark(state, "render", started)
 
         # Fix pack 9: the Sumber block rests on the reports the FINAL rendered
@@ -976,6 +1028,16 @@ class RagPipeline:
         }
         state["causal"] = causal_connectors(answer_text)
         self._mark(state, "metrics", started)
+        self._measure_wording(
+            state,
+            answer_text,
+            [
+                {"text": point.text, "report_ids": point.report_ids}
+                for section in validation.sections
+                for point in section.points
+            ],
+            chunks,
+        )
 
         started = time.perf_counter()
         coverage_line = self._coverage_line(
@@ -1025,12 +1087,15 @@ class RagPipeline:
         state["raw_answers"].append(self._raw_answer(attempt, completion))
         return completion
 
-    def _validate_structured_payload(self, content: str, bundle: Any):
+    def _validate_structured_payload(
+        self, content: str, bundle: Any, max_points_per_report: int
+    ):
         payload = structured_answer.parse_payload(content)
         return structured_answer.validate_payload(
             payload,
             alias_map=bundle.alias_map,
             retrieved=list(bundle.report_metadata),
+            max_points_per_report=max_points_per_report,
         )
 
     def _compose_structured_answer(
@@ -1038,6 +1103,7 @@ class RagPipeline:
         result,
         state: Dict[str, Any],
         bundle: Any,
+        chunks: List[RetrievedChunk],
         question: str,
         mode: QueryMode,
         deadline: Optional[Deadline] = None,
@@ -1053,6 +1119,14 @@ class RagPipeline:
         point at all gets one repair retry, and a repair that cannot be served is
         RATE_LIMITED instead of a misleading NO_SOURCE.
         """
+        # Fix pack 10 (R1): a question about one explicit report asks for every
+        # item the report states, so the breadth cap is raised for that answer.
+        # The total cap still applies.
+        max_points_per_report = (
+            config.ANSWER_ID_ROUTE_MAX_POINTS_PER_REPORT
+            if id_route or len(bundle.report_metadata) == 1
+            else config.ANSWER_MAX_BULLETS_PER_REPORT
+        )
         user_prompt = self._answer_user_prompt(
             bundle.text, question, mode, hint_extra=hint_extra
         )
@@ -1065,7 +1139,9 @@ class RagPipeline:
             )
 
         try:
-            validation = self._validate_structured_payload(completion.content, bundle)
+            validation = self._validate_structured_payload(
+                completion.content, bundle, max_points_per_report
+            )
         except structured_answer.StructuredAnswerError:
             return self._structured_technical_error(
                 result, state, "invalid_structured_output"
@@ -1113,7 +1189,9 @@ class RagPipeline:
                 state["incidents"]["answer_truncated"] = 1
                 return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
             try:
-                validation = self._validate_structured_payload(retry.content, bundle)
+                validation = self._validate_structured_payload(
+                    retry.content, bundle, max_points_per_report
+                )
             except structured_answer.StructuredAnswerError:
                 return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
             self._merge_incidents(state, validation.incidents)
@@ -1143,6 +1221,15 @@ class RagPipeline:
         state["negation"] = negation_sentences(answer_text)
         state["causal"] = causal_connectors(answer_text)
         self._mark(state, "metrics", started)
+        self._measure_wording(
+            state,
+            answer_text,
+            [
+                {"text": point.text, "report_ids": point.report_ids}
+                for point in validation.points
+            ],
+            chunks,
+        )
 
         started = time.perf_counter()
         coverage_line = self._coverage_line(
@@ -1224,6 +1311,7 @@ class RagPipeline:
                 result,
                 state,
                 bundle,
+                chunks,
                 question,
                 mode,
                 deadline=deadline,
