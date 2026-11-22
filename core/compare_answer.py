@@ -4,7 +4,12 @@ Structured comparison answers (fix pack J1).
 The comparison path asks the model for JSON only:
 
     {"groups": [{"label": ..., "points": [{"text": ..., "cite": [...]}]}],
-     "differences": [{"text": ..., "cite": [...]}]}
+     "contrasts": [{"dimension": ...,
+                    "sides": [{"label": ..., "text": ..., "cite": [...]}]}]}
+
+A contrast is a pair of sides on the same dimension, exactly one per group
+(fix pack 8, N1). The free "differences" list could name one group only, which
+made every difference unsupported; a paired shape can be validated instead.
 
 The model never writes a heading, a citation, a count or the Sumber block. This
 module owns the contract:
@@ -55,15 +60,32 @@ class CompareSection:
 
 
 @dataclass(frozen=True)
+class CompareContrastSide:
+    """One group's side of a contrast: text plus this group's report ids."""
+
+    label: str
+    text: str
+    report_ids: List[str]
+
+
+@dataclass(frozen=True)
+class CompareContrast:
+    """The same dimension described by every comparison group."""
+
+    dimension: str
+    sides: List[CompareContrastSide]
+
+
+@dataclass(frozen=True)
 class CompareValidation:
     sections: List[CompareSection]
-    differences: List[ComparePoint]
+    contrasts: List[CompareContrast]
     incidents: Dict[str, int] = field(default_factory=dict)
     cited_report_ids: List[str] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
-        return not any(section.points for section in self.sections) and not self.differences
+        return not any(section.points for section in self.sections) and not self.contrasts
 
 
 def _point_schema() -> Dict[str, Any]:
@@ -74,6 +96,31 @@ def _point_schema() -> Dict[str, Any]:
             "cite": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["text", "cite"],
+        "additionalProperties": False,
+    }
+
+
+def _side_schema(labels: Sequence[str]) -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "label": {"type": "string", "enum": list(labels)},
+            "text": {"type": "string"},
+            "cite": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["label", "text", "cite"],
+        "additionalProperties": False,
+    }
+
+
+def _contrast_schema(labels: Sequence[str]) -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "dimension": {"type": "string"},
+            "sides": {"type": "array", "items": _side_schema(labels)},
+        },
+        "required": ["dimension", "sides"],
         "additionalProperties": False,
     }
 
@@ -95,9 +142,12 @@ def build_schema(labels: Sequence[str]) -> Dict[str, Any]:
                     "additionalProperties": False,
                 },
             },
-            "differences": {"type": "array", "items": _point_schema()},
+            "contrasts": {
+                "type": "array",
+                "items": _contrast_schema(labels),
+            },
         },
-        "required": ["groups", "differences"],
+        "required": ["groups", "contrasts"],
         "additionalProperties": False,
     }
 
@@ -132,7 +182,13 @@ _ALIAS_TOKEN = re.compile(r"[\[\(]?\s*LAP[0-9]{1,3}\s*[\]\)]?", re.IGNORECASE)
 _REPORT_ID_TOKEN = re.compile(r"[\[\(]?\s*RPT[0-9]{4,}\s*[\]\)]?", re.IGNORECASE)
 
 
-def _clean_text(raw: Any, incidents: Dict[str, int]) -> str:
+def _clean_text(
+    raw: Any,
+    incidents: Dict[str, int],
+    *,
+    max_words: int = config.COMPARE_POINT_MAX_WORDS,
+    limit_incident: str = "point_too_long",
+) -> str:
     """Model text without alias/identifier tokens, normalized and word-capped."""
     text = str(raw or "")
     if _ALIAS_TOKEN.search(text):
@@ -145,9 +201,9 @@ def _clean_text(raw: Any, incidents: Dict[str, int]) -> str:
     text = text.strip(" -")
 
     words = text.split()
-    if len(words) > config.COMPARE_POINT_MAX_WORDS:
-        incidents["point_too_long"] += 1
-        text = " ".join(words[: config.COMPARE_POINT_MAX_WORDS])
+    if len(words) > max_words:
+        incidents[limit_incident] += 1
+        text = " ".join(words[:max_words])
     return text
 
 
@@ -163,14 +219,12 @@ def _clean_point(
     retrieved: Sequence[str],
     incidents: Dict[str, int],
     label: Optional[str] = None,
-    require_all_labels: Sequence[str] = (),
 ) -> Optional[ComparePoint]:
     """
     One bullet after validation, or None when it cannot be traced to a report.
 
     ``allowed_reports`` maps a report id to the comparison group it belongs to;
-    a citation outside that group is removed and counted. ``require_all_labels``
-    makes a difference bullet that names several groups cite all of them.
+    a citation outside that group is removed and counted.
     """
     if not isinstance(raw, dict):
         incidents["malformed_point"] += 1
@@ -204,17 +258,107 @@ def _clean_point(
         incidents["cite_over_limit"] += 1
         resolved = resolved[: config.COMPARE_CITE_MAX]
 
-    if require_all_labels:
-        cited_labels = {allowed_reports.get(report_id) for report_id in resolved}
-        if not set(require_all_labels).issubset(cited_labels):
-            incidents["cross_group_citation"] += 1
-            return None
-
     if len(resolved) < config.COMPARE_CITE_MIN:
         incidents["uncited_point_dropped"] += 1
         return None
 
     return ComparePoint(text=text, report_ids=resolved)
+
+
+def _clean_contrast(
+    raw: Any,
+    *,
+    required_labels: Sequence[str],
+    allowed_reports: Mapping[str, str],
+    alias_map: Mapping[str, str],
+    retrieved: Sequence[str],
+    incidents: Dict[str, int],
+) -> Optional[CompareContrast]:
+    """
+    One contrast with exactly one supported side per group, or None.
+
+    Missing, duplicated or unknown labels drop the whole contrast, as does a
+    side that ends up with no citation after citations outside its own group are
+    removed. A contrast beyond the configured limit is counted as truncated, not
+    as invalid.
+    """
+    if not isinstance(raw, dict):
+        incidents["contrast_invalid"] += 1
+        return None
+
+    dimension = _clean_text(
+        raw.get("dimension"),
+        incidents,
+        max_words=config.COMPARE_DIMENSION_MAX_WORDS,
+        limit_incident="dimension_too_long",
+    )
+    if not dimension:
+        incidents["contrast_invalid"] += 1
+        return None
+
+    raw_sides = raw.get("sides")
+    if not isinstance(raw_sides, list):
+        incidents["contrast_invalid"] += 1
+        return None
+
+    by_label: Dict[str, CompareContrastSide] = {}
+    for raw_side in raw_sides:
+        if not isinstance(raw_side, dict):
+            incidents["contrast_invalid"] += 1
+            return None
+        label = str(raw_side.get("label") or "").strip()
+        if label not in required_labels or label in by_label:
+            incidents["contrast_invalid"] += 1
+            return None
+
+        text = _clean_text(
+            raw_side.get("text"),
+            incidents,
+            max_words=config.COMPARE_CONTRAST_TEXT_MAX_WORDS,
+            limit_incident="contrast_text_too_long",
+        )
+        if not text:
+            incidents["contrast_invalid"] += 1
+            return None
+
+        raw_cites = raw_side.get("cite")
+        if isinstance(raw_cites, str):
+            raw_cites = [raw_cites]
+        if not isinstance(raw_cites, list):
+            raw_cites = []
+
+        resolved: List[str] = []
+        for item in raw_cites:
+            alias = _normalize_alias(item)
+            report_id = alias_map.get(alias)
+            if report_id is None or report_id not in retrieved:
+                incidents["unknown_alias"] += 1
+                continue
+            if allowed_reports.get(report_id) != label:
+                incidents["cross_group_citation"] += 1
+                continue
+            if report_id not in resolved:
+                resolved.append(report_id)
+
+        if len(resolved) > config.COMPARE_CITE_MAX:
+            incidents["cite_over_limit"] += 1
+            resolved = resolved[: config.COMPARE_CITE_MAX]
+
+        if not resolved:
+            incidents["contrast_invalid"] += 1
+            return None
+
+        by_label[label] = CompareContrastSide(
+            label=label, text=text, report_ids=resolved
+        )
+
+    if set(by_label) != set(required_labels):
+        incidents["contrast_invalid"] += 1
+        return None
+
+    return CompareContrast(
+        dimension=dimension, sides=[by_label[label] for label in required_labels]
+    )
 
 
 def validate_payload(
@@ -238,8 +382,10 @@ def validate_payload(
         "point_too_long": 0,
         "cite_over_limit": 0,
         "points_over_limit": 0,
-        "differences_over_limit": 0,
-        "difference_missing_group": 0,
+        "contrast_invalid": 0,
+        "contrast_truncated": 0,
+        "dimension_too_long": 0,
+        "contrast_text_too_long": 0,
     }
 
     by_label: Dict[str, List[ComparePoint]] = {label: [] for label in labels}
@@ -275,42 +421,34 @@ def validate_payload(
                 continue
             by_label[label].append(point)
 
-    differences: List[ComparePoint] = []
-    # Fix pack L3c: a difference must cite at least one alias from every group
-    # that has documents; otherwise it is dropped and counted.
-    active_labels = {
-        report_group.get(report_id) for report_id in retrieved
-    } & set(labels)
-    raw_differences = payload.get("differences")
-    if isinstance(raw_differences, list):
-        for raw_point in raw_differences:
-            mentioned = [
-                label
-                for label in labels
-                if label.casefold() in str((raw_point or {}).get("text") or "").casefold()
-            ]
-            point = _clean_point(
-                raw_point,
+    contrasts: List[CompareContrast] = []
+    # Fix pack 8: a contrast must have exactly one side per group that has
+    # documents, each supported by that group's own reports. A free difference
+    # that named one group only could never be validated, so every such point was
+    # dropped. A configured but empty group cannot be one side of a contrast.
+    active_labels = [
+        label
+        for label in labels
+        if any(report_group.get(report_id) == label for report_id in retrieved)
+    ]
+    raw_contrasts = payload.get("contrasts")
+    if isinstance(raw_contrasts, list):
+        for raw_contrast in raw_contrasts:
+            if len(contrasts) >= config.COMPARE_CONTRASTS_MAX:
+                incidents["contrast_truncated"] += 1
+                continue
+            contrast = _clean_contrast(
+                raw_contrast,
+                required_labels=active_labels,
                 allowed_reports=report_group,
                 alias_map=alias_map,
                 retrieved=retrieved,
                 incidents=incidents,
-                require_all_labels=mentioned if len(mentioned) > 1 else (),
             )
-            if point is None:
-                continue
-            cited_labels = {
-                report_group.get(report_id) for report_id in point.report_ids
-            }
-            if len(active_labels) < 2 or not active_labels.issubset(cited_labels):
-                incidents["difference_missing_group"] += 1
-                continue
-            if len(differences) >= config.COMPARE_DIFFERENCES_MAX:
-                incidents["differences_over_limit"] += 1
-                continue
-            differences.append(point)
-    elif raw_differences is not None:
-        incidents["malformed_point"] += 1
+            if contrast is not None:
+                contrasts.append(contrast)
+    elif raw_contrasts is not None:
+        incidents["contrast_invalid"] += 1
 
     sections = [
         CompareSection(label=label, points=by_label[label]) for label in labels
@@ -322,14 +460,15 @@ def validate_payload(
             for report_id in point.report_ids:
                 if report_id not in cited:
                     cited.append(report_id)
-    for point in differences:
-        for report_id in point.report_ids:
-            if report_id not in cited:
-                cited.append(report_id)
+    for contrast in contrasts:
+        for side in contrast.sides:
+            for report_id in side.report_ids:
+                if report_id not in cited:
+                    cited.append(report_id)
 
     return CompareValidation(
         sections=sections,
-        differences=differences,
+        contrasts=contrasts,
         incidents={key: value for key, value in incidents.items() if value},
         cited_report_ids=cited,
     )
@@ -346,14 +485,15 @@ def _citation(report_ids: Sequence[str]) -> str:
 def render_answer(
     validation: CompareValidation, compare_by: Optional[str] = None
 ) -> str:
-    """Render validated sections, differences and their citations (no counts)."""
+    """Render validated sections, paired contrasts and their citations."""
     blocks: List[str] = []
 
     for section in validation.sections:
         lines = [
             config.COMPARE_GROUP_HEADING_TEMPLATE.format(
                 label=config.comparison_display_label(compare_by or "", section.label)
-            )
+            ),
+            "",
         ]
         if section.points:
             lines.extend(
@@ -366,14 +506,24 @@ def render_answer(
             lines.append(config.COMPARE_EMPTY_GROUP)
         blocks.append(config.COMPARE_LINE_SEPARATOR.join(lines))
 
-    if validation.differences:
-        lines = [config.COMPARE_DIFFERENCES_HEADING]
-        lines.extend(
-            config.COMPARE_BULLET_TEMPLATE.format(
-                text=point.text, citations=_citation(point.report_ids)
+    if validation.contrasts:
+        lines = [config.COMPARE_CONTRASTS_HEADING, ""]
+        for index, contrast in enumerate(validation.contrasts):
+            if index:
+                lines.append("")
+            lines.append(
+                config.COMPARE_CONTRAST_DIMENSION_TEMPLATE.format(
+                    dimension=contrast.dimension
+                )
             )
-            for point in validation.differences
-        )
+            lines.extend(
+                config.COMPARE_CONTRAST_SIDE_TEMPLATE.format(
+                    label=config.comparison_display_label(compare_by or "", side.label),
+                    text=side.text,
+                    citations=_citation(side.report_ids),
+                )
+                for side in contrast.sides
+            )
         blocks.append(config.COMPARE_LINE_SEPARATOR.join(lines))
 
     return config.COMPARE_SECTION_SEPARATOR.join(blocks)

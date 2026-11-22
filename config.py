@@ -357,10 +357,11 @@ LLM_MAX_CONCURRENT_CALLS = 2
 # account cannot afford ~2,000-token contexts. 2,500 tokens still fits about six
 # 350-450-token chunks.
 MAX_CONTEXT_TOKENS = 2500
-# Comparison answers are structured JSON (fix pack J1): up to 3 groups x 4 points
-# plus 3 differences, each with its own citations. 900 completion tokens leaves
-# room for ~160-250 reasoning tokens at effort "low" and 4,900 characters of
-# JSON, i.e. the documented point caps would have to be hit at every level.
+# Comparison answers are structured JSON (fix pack J1): up to 3 groups x 3 points
+# plus 2 paired contrasts (2 sides each), every item with its own citations.
+# 900 completion tokens leaves room for ~160-250 reasoning tokens at effort
+# "low" and the measured 7-point payloads (~1,100 characters of JSON), i.e. the
+# documented caps would have to be hit at every level to approach it.
 # Justification: the previous free-text cap was 800; the structured answer adds
 # per-point citation arrays but removes the prose headings the backend now writes.
 LLM_MAX_OUTPUT_TOKENS_COMPARE = 900
@@ -382,6 +383,10 @@ CONTEXT_TOKEN_ESTIMATOR_CHARS_PER_TOKEN = 2.5
 # is the safe direction (the provider refuses a request that is too large).
 TOKEN_ESTIMATE_DYNAMIC_CHARS_PER_TOKEN = 4.3
 TOKEN_ESTIMATE_MARGIN_RATIO = 0.12
+# The counting tokenizer is encode-only: it must count a static prompt of any
+# length without the e5 model's 512-token warning, and nothing it counts is ever
+# fed to the model. Its model_max_length is raised so transformers never warns.
+TOKEN_COUNT_MAX_LENGTH = 100_000_000
 # Completion tokens reserved per call (fix pack 7). The provider's ceiling check
 # charges the declared completion cap up front, so the cap stays at its real value
 # (LLM_MAX_OUTPUT_TOKENS / ..._COMPARE / LLM_ANALYZER_MAX_OUTPUT_TOKENS) and the
@@ -399,6 +404,20 @@ ANSWER_MAX_BULLETS = 6
 ANSWER_MAX_BULLETS_PER_REPORT = 2
 
 # Analyzer (LLM call #1)
+# Fix pack 8 (N4): the answer's post-processing is timed per stage so a slow
+# first question can be attributed to one stage instead of "post_ms".
+POST_PHASE_STAGES = (
+    "context",
+    "sanitize",
+    "citations",
+    "guardrails",
+    "trim",
+    "metrics",
+    "coverage",
+    "sources",
+    "render",
+    "compare_validate",
+)
 ANALYZER_MAX_SEARCH_QUERY_CHARS = 300
 ANALYZER_FALLBACK_MODE = "specific"
 ANALYZER_MAX_QUESTION_CHARS = CHAT_MAX_INPUT_CHARS
@@ -670,6 +689,21 @@ SMOKE_RETRIEVED_PREVIEW = 5
 
 # Backend answer sanitizer (fix pack F4d): HTML is stripped, Markdown kept.
 SANITIZER_MAX_BLANK_LINES_PATTERN = "\n\n"
+# Invisible and look-alike characters the real model emitted (fix pack 8, N5b):
+# non-breaking hyphens in "end-to-end"/"terburu-buruan", and no-break or thin
+# spaces in "83 %". They are normalized to their ASCII equivalents; the model's
+# wording is otherwise untouched.
+SANITIZER_CHARACTER_MAP = {
+    "\u2011": "-",  # non-breaking hyphen
+    "\u2010": "-",  # hyphen
+    "\u00a0": " ",  # no-break space
+    "\u202f": " ",  # narrow no-break space
+    "\u2009": " ",  # thin space
+    "\u200b": "",  # zero-width space
+    "\u200c": "",  # zero-width non-joiner
+    "\u200d": "",  # zero-width joiner
+    "\ufeff": "",  # byte-order mark
+}
 
 # Output guardrails (Brief 5.7)
 # Narrow, targeted detector for requests about personal/administrative data.
@@ -794,15 +828,22 @@ SETTINGS_ENV_KB_WORK_DIR = "KB_WORK_DIR"
 # Structured comparison answers (fix pack J1). The model returns JSON; the
 # backend validates it and writes every heading, citation and count itself.
 COMPARE_JSON_SCHEMA_NAME = "compare_answer"
-COMPARE_POINTS_PER_GROUP_MAX = 4
-COMPARE_DIFFERENCES_MAX = 2
+COMPARE_POINTS_PER_GROUP_MAX = 3
+# Fix pack 8: the free "differences" list is replaced by paired contrasts, one
+# side per group on the same dimension. A contrast is the only shape that can be
+# validated: a free difference naming one group only was dropped every time.
+COMPARE_CONTRASTS_MAX = 2
 COMPARE_POINT_MAX_WORDS = 40
+COMPARE_DIMENSION_MAX_WORDS = 8
+COMPARE_CONTRAST_TEXT_MAX_WORDS = 35
 COMPARE_CITE_MIN = 1
 COMPARE_CITE_MAX = 2
-# The backend writes the heading, so it carries no Markdown emphasis at all: a
-# bold label line was counted as prose and inflated metrics (fix pack L2).
-COMPARE_GROUP_HEADING_TEMPLATE = "{label}"
-COMPARE_DIFFERENCES_HEADING = "**Perbedaan utama**"
+# Fix pack 8: the backend writes the group heading in bold, followed by a blank
+# line, so a group name reads as a heading instead of a stray prose line.
+COMPARE_GROUP_HEADING_TEMPLATE = "**{label}**"
+COMPARE_CONTRASTS_HEADING = "**Perbedaan utama**"
+COMPARE_CONTRAST_DIMENSION_TEMPLATE = "- {dimension}"
+COMPARE_CONTRAST_SIDE_TEMPLATE = "  - {label}: {text} {citations}"
 COMPARE_EMPTY_GROUP = (
     "Tidak ada poin yang dapat ditelusuri ke dokumen untuk kelompok ini."
 )
@@ -856,6 +897,19 @@ NEGATION_SUBJECT_MARKERS = (
 )
 NEGATION_SAMPLE_LIMIT = 5
 NEGATION_SENTENCE_SPLIT_PATTERN = r"(?<=[.!?])\s+"
+
+# Non-blocking causal-connector metric (fix pack 8, N2b). It measures how many
+# answer sentences join two facts with a link the source may not state. It never
+# changes an answer; samples stay in the debug object.
+CAUSAL_CONNECTORS = (
+    "sehingga",
+    "karena",
+    "akibatnya",
+    "membuat",
+    "memengaruhi",
+    "menyebabkan",
+)
+CAUSAL_SAMPLE_LIMIT = 5
 
 # Operational logging for the app layer (metadata only).
 APP_LOG_FILE_PREFIX = "app"

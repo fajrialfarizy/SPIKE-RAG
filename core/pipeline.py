@@ -27,6 +27,7 @@ import config
 from core import compare_answer, prompts
 from core.analyzer import Analyzer
 from core.answer_trimmer import trim_bullets
+from core.causal import causal_connectors
 from core.catalog import render_catalog_answer
 from core.citations import (
     build_source_block,
@@ -104,11 +105,16 @@ class DebugInfo:
     context_text: str = ""
     # Non-blocking negation metric (fix pack K2). Samples stay developer-only.
     negation: Dict[str, Any] = field(default_factory=dict)
+    # Non-blocking causal-connector metric (fix pack 8, N2b). Debug only.
+    causal: Dict[str, Any] = field(default_factory=dict)
     # Tokens saved by collapsing wrapped lines in the rendered context (L1d).
     context_tokens_saved: int = 0
     # Fix pack 7: where the time went, so a non-ANSWERED run can be read without
     # --show-raw (analyzer_ms, retrieval_ms, queue_wait_ms, model_ms, post_ms).
     phases: Dict[str, float] = field(default_factory=dict)
+    # Fix pack 8 (N4): post-processing split into its stages, so a slow first
+    # question is attributed to one stage instead of the post_ms total.
+    post_phases: Dict[str, float] = field(default_factory=dict)
     deadline_remaining_seconds: float = 0.0
     # Wait the limiter computed when it refused to queue (RATE_LIMITED only).
     retry_after_seconds: Optional[float] = None
@@ -141,8 +147,10 @@ class DebugInfo:
             "coverage": self.coverage,
             "context_text": self.context_text,
             "negation": self.negation,
+            "causal": self.causal,
             "context_tokens_saved": self.context_tokens_saved,
             "phases": self.phases,
+            "post_phases": self.post_phases,
             "deadline_remaining_seconds": self.deadline_remaining_seconds,
             "retry_after_seconds": self.retry_after_seconds,
             "dropped_bullets": self.dropped_bullets,
@@ -234,6 +242,14 @@ class RagPipeline:
         return totals
 
     @staticmethod
+    def _mark(state: Dict[str, Any], stage: str, started: float) -> None:
+        """Accumulate one post-processing stage in milliseconds."""
+        phases = state.setdefault("post_phases", {})
+        phases[stage] = phases.get(stage, 0.0) + (
+            time.perf_counter() - started
+        ) * 1000.0
+
+    @staticmethod
     def _retrieved_debug(chunks: List[RetrievedChunk]) -> List[Dict[str, Any]]:
         return [
             {
@@ -309,8 +325,10 @@ class RagPipeline:
             "coverage": "",
             "context_text": "",
             "negation": {},
+            "causal": {},
             "context_tokens_saved": 0,
             "dropped_bullets": 0,
+            "post_phases": {},
         }
 
         def result(
@@ -366,8 +384,13 @@ class RagPipeline:
                 coverage=state["coverage"],
                 context_text=state["context_text"],
                 negation=dict(state["negation"]),
+                causal=dict(state["causal"]),
                 context_tokens_saved=int(state["context_tokens_saved"]),
                 phases={key: round(value, 1) for key, value in phases.items()},
+                post_phases={
+                    key: round(value, 1)
+                    for key, value in (state.get("post_phases") or {}).items()
+                },
                 deadline_remaining_seconds=round(deadline.remaining(), 1),
                 retry_after_seconds=retry_after_seconds,
                 dropped_bullets=int(state["dropped_bullets"]),
@@ -721,6 +744,7 @@ class RagPipeline:
                 result, state, "invalid_structured_output"
             )
 
+        started = time.perf_counter()
         try:
             payload = compare_answer.parse_payload(completion.content)
             validation = compare_answer.validate_payload(
@@ -734,6 +758,7 @@ class RagPipeline:
             return self._structured_technical_error(
                 result, state, "invalid_structured_output"
             )
+        self._mark(state, "compare_validate", started)
 
         for key, value in validation.incidents.items():
             state["incidents"][key] = state["incidents"].get(key, 0) + value
@@ -741,27 +766,37 @@ class RagPipeline:
         if validation.is_empty:
             return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
 
+        started = time.perf_counter()
         answer_text = compare_answer.render_answer(validation, compare_by)
+        self._mark(state, "render", started)
+
+        started = time.perf_counter()
         state["style"] = citation_style_metrics(answer_text)
         state["negation"] = {
             **negation_sentences(answer_text),
             "per_point": point_negation_counts(
                 [point.text for section in validation.sections for point in section.points]
-                + [point.text for point in validation.differences]
+                + [side.text for contrast in validation.contrasts for side in contrast.sides]
             ),
         }
+        state["causal"] = causal_connectors(answer_text)
+        self._mark(state, "metrics", started)
 
+        started = time.perf_counter()
         coverage_line = self._coverage_line(
             state, bundle, chunks, validation.cited_report_ids
         )
         state["coverage"] = coverage_line
         if coverage_line:
             answer_text = f"{answer_text}{config.COVERAGE_BLOCK_SEPARATOR}{coverage_line}"
+        self._mark(state, "coverage", started)
 
+        started = time.perf_counter()
         source_block = build_source_block(
             validation.cited_report_ids, bundle.report_metadata
         )
         final_answer = compose_answer(answer_text, source_block)
+        self._mark(state, "sources", started)
 
         return result(
             AnswerStatus.ANSWERED,
@@ -792,6 +827,7 @@ class RagPipeline:
             state["style"] = citation_style_metrics(answer)
             return result(AnswerStatus.ANSWERED, answer, cited=[])
 
+        started = time.perf_counter()
         bundle, dropped = self.context_builder.build_chunks_within_budget(
             chunks,
             self.token_counter,
@@ -806,6 +842,7 @@ class RagPipeline:
             self.token_counter.count_tokens(bundle.raw_text)
             - self.token_counter.count_tokens(bundle.text),
         )
+        self._mark(state, "context", started)
         retrieved_ids = list(bundle.report_metadata)
 
         if state.get("compare_by"):
@@ -827,12 +864,14 @@ class RagPipeline:
         )
         state["calls"].append(completion.to_metrics("answer"))
         state["raw_answers"].append(self._raw_answer(1, completion))
+        started = time.perf_counter()
         answer_text = sanitize_answer(completion.content)
 
         truncated = completion.finish_reason == "length"
         if truncated:
             state["incidents"]["answer_truncated"] = 1
             answer_text = trim_to_last_complete_unit(answer_text)
+        self._mark(state, "sanitize", started)
 
         if prompts.is_not_found_refusal(answer_text):
             # Fix pack H2: the model declared the information unavailable. That is
@@ -840,6 +879,7 @@ class RagPipeline:
             return self._declared_not_found(result, state, id_route)
 
         def resolve(raw_answer: str):
+            resolve_started = time.perf_counter()
             citations = process_citations(
                 raw_answer, bundle.alias_map, retrieved_ids
             )
@@ -848,6 +888,7 @@ class RagPipeline:
                 citations.cited_report_ids,
                 bundle.report_metadata,
             )
+            self._mark(state, "citations", resolve_started)
             return citations, missing
 
         citations, uncited = resolve(answer_text)
@@ -870,11 +911,13 @@ class RagPipeline:
             )
             state["calls"].append(retry_completion.to_metrics("answer_retry"))
             state["raw_answers"].append(self._raw_answer(2, retry_completion))
+            started = time.perf_counter()
             answer_text = sanitize_answer(retry_completion.content)
             truncated = retry_completion.finish_reason == "length"
             if truncated:
                 state["incidents"]["answer_truncated"] = 1
                 answer_text = trim_to_last_complete_unit(answer_text)
+            self._mark(state, "sanitize", started)
             if prompts.is_not_found_refusal(answer_text):
                 return self._declared_not_found(result, state, id_route)
             citations, uncited = resolve(answer_text)
@@ -889,7 +932,9 @@ class RagPipeline:
         if not citations.cited_report_ids or uncited:
             return result(AnswerStatus.NO_SOURCE, prompts.NO_SOURCE_RESPONSE)
 
+        started = time.perf_counter()
         guarded = self.output_guard.apply(citations.text)
+        self._mark(state, "guardrails", started)
         for key, value in guarded.incidents.items():
             state["incidents"][key] = state["incidents"].get(key, 0) + value
 
@@ -904,6 +949,7 @@ class RagPipeline:
         # Fix pack 7 (approved deviation): enforce the addendum caps here instead
         # of paying for a second model call. Cites, coverage and Sumber are read
         # from the TRIMMED text, so nothing claims a point that is gone.
+        started = time.perf_counter()
         answer_text, dropped_bullets = trim_bullets(answer_text)
         state["dropped_bullets"] = dropped_bullets
         cited_report_ids = citations.cited_report_ids
@@ -913,21 +959,29 @@ class RagPipeline:
                 answer_text, bundle.alias_map, retrieved_ids
             ).cited_report_ids
             logger.info("chat_answer_trimmed dropped_bullets=%d", dropped_bullets)
+        self._mark(state, "trim", started)
 
+        started = time.perf_counter()
         state["style"] = citation_style_metrics(answer_text)
 
-        # Fix pack K2: measured on the answer body, before the backend coverage
-        # line and Sumber block, which are not model statements.
+        # Fix pack K2 / 8: measured on the answer body, before the backend
+        # coverage line and Sumber block, which are not model statements.
         state["negation"] = negation_sentences(answer_text)
+        state["causal"] = causal_connectors(answer_text)
+        self._mark(state, "metrics", started)
 
+        started = time.perf_counter()
         coverage_line = self._coverage_line(
             state, bundle, chunks, cited_report_ids
         )
         state["coverage"] = coverage_line
         if coverage_line:
             answer_text = f"{answer_text}{config.COVERAGE_BLOCK_SEPARATOR}{coverage_line}"
+        self._mark(state, "coverage", started)
 
+        started = time.perf_counter()
         source_block = build_source_block(cited_report_ids, bundle.report_metadata)
         final_answer = compose_answer(answer_text, source_block)
+        self._mark(state, "sources", started)
 
         return result(AnswerStatus.ANSWERED, final_answer, cited=cited_report_ids)

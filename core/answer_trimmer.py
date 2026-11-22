@@ -8,7 +8,13 @@ a repair, the backend trims the finished answer:
 1. keep up to ``ANSWER_MAX_BULLETS_PER_REPORT`` bullets per cited report, in the
    original order, so every report mentioned still has a representative point,
 2. then fill the remaining slots up to ``ANSWER_MAX_BULLETS`` in original order,
+   still respecting the per-report cap,
 3. drop the rest, keeping every non-bullet line (intro, closing paragraph).
+
+Fix pack 8 (N3): the per-report cap is enforced on every answer, not only above
+six bullets. A model that returns seven points over three reports once kept
+three points for one report because the safety net never ran; the cap is part of
+the answer contract, so it now always applies.
 
 This is a deliberate post-hoc deviation approved by the supervisor. The caller
 recomputes citations, the Sumber block and the coverage line from the trimmed
@@ -38,9 +44,9 @@ def trim_bullets(
     """
     Return the trimmed text and how many bullets were dropped.
 
-    A text with no more than ``max_bullets`` bullets is returned unchanged, so the
-    common case pays nothing. Nothing is trimmed when no report id can be read
-    from the bullets: the balanced pass has nothing to balance with.
+    Both caps always apply, so a short answer whose only violation is the
+    per-report cap is trimmed too. A bullet without a report id is kept only by
+    the fill pass, and every kept bullet still respects the per-report cap.
     """
     limit = config.ANSWER_MAX_BULLETS if max_bullets is None else int(max_bullets)
     per_report = (
@@ -51,7 +57,7 @@ def trim_bullets(
 
     lines = (text or "").split("\n")
     bullet_indices = [index for index, line in enumerate(lines) if is_bullet(line)]
-    if len(bullet_indices) <= limit:
+    if not bullet_indices:
         return text, 0
 
     counts: dict = {}
@@ -70,12 +76,20 @@ def trim_bullets(
         for report in reports:
             counts[report] = counts.get(report, 0) + 1
 
-    # Pass 2: fill the remaining slots in the original order.
+    # Pass 2: fill the remaining slots in the original order, never above the
+    # per-report cap (that cap is the contract, not a preference of pass 1).
     kept: Set[int] = set(keep)
     for index in bullet_indices:
         if len(kept) >= limit:
             break
+        if index in kept:
+            continue
+        reports = _REPORT_ID.findall(lines[index])
+        if any(counts.get(report, 0) >= per_report for report in reports):
+            continue
         kept.add(index)
+        for report in reports:
+            counts[report] = counts.get(report, 0) + 1
 
     dropped = len(bullet_indices) - len(kept)
     if dropped <= 0:
