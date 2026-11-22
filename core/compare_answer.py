@@ -21,10 +21,17 @@ and added merged claims there.
 
 Fix pack 11 (S1d/S1e): the pick value is a STRING with an enum generated per
 request ("1".."N"), because string+enum is the construct the real model already
-accepted. ``COMPARE_CONTRAST_MODE`` selects the shape by config only: "pick"
-(the default) or "sides" (the fix pack 9 shape, kept because it is known to work
-on the real model). Both modes apply the fix pack 10 dimension rules and the
-citation ceilings, and neither is ever chosen at runtime as a fallback.
+accepted. ``COMPARE_CONTRAST_MODE`` selects the shape by config only: "pick" or
+"sides" (the fix pack 9 shape, kept because it is known to work on the real
+model). Both modes apply the fix pack 10 dimension rules and the citation
+ceilings, and neither is ever chosen at runtime as a fallback.
+
+Fix pack 12 (T1): the default is "off". The real run paired non-comparable
+points, because the model chooses the pairs and the backend only validates the
+indexes; the contrast section is a quality decision to be revisited with the
+Phase 4 human ratings. In "off" mode the schema has no ``contrasts`` property,
+the answer renders no "Perbedaan utama" section, and a payload that still
+carries contrasts is ignored and never rendered (the counters stay 0).
 
 The model never writes a heading, a citation, a count or the Sumber block:
 
@@ -226,21 +233,27 @@ def build_schema(
     """Strict JSON Schema for one comparison answer over the given group keys."""
     keys = list(group_keys)
     shape = contrast_mode(mode)
+    properties: Dict[str, Any] = {
+        "groups": {
+            "type": "object",
+            "properties": {key: {"type": "array", "items": _point_schema()} for key in keys},
+            "required": keys,
+            "additionalProperties": False,
+        }
+    }
+    required = ["groups"]
+    # Fix pack 12 (T1): with contrasts "off" the schema has no contrasts property
+    # at all, so the model cannot produce pairs the backend would have to discard.
+    if shape != "off":
+        properties["contrasts"] = {
+            "type": "array",
+            "items": _contrast_schema(keys, shape),
+        }
+        required.append("contrasts")
     return {
         "type": "object",
-        "properties": {
-            "groups": {
-                "type": "object",
-                "properties": {key: {"type": "array", "items": _point_schema()} for key in keys},
-                "required": keys,
-                "additionalProperties": False,
-            },
-            "contrasts": {
-                "type": "array",
-                "items": _contrast_schema(keys, shape),
-            },
-        },
-        "required": ["groups", "contrasts"],
+        "properties": properties,
+        "required": required,
         "additionalProperties": False,
     }
 
@@ -694,7 +707,12 @@ def validate_payload(
 
     contrasts: List[CompareContrast] = []
     raw_contrasts = payload.get("contrasts")
-    if isinstance(raw_contrasts, list):
+    if shape == "off":
+        # Fix pack 12 (T1): the schema has no contrasts property, so a strict
+        # response can never carry one. A payload that still does has nothing to
+        # render; the section is omitted and every contrast counter stays 0.
+        raw_contrasts = None
+    if shape != "off" and isinstance(raw_contrasts, list):
         for raw_contrast in raw_contrasts:
             if len(contrasts) >= config.COMPARE_CONTRASTS_MAX:
                 incidents["contrast_truncated"] += 1

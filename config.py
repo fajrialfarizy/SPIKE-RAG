@@ -888,13 +888,20 @@ COMPARE_POINT_MAX_WORDS = 40
 COMPARE_DIMENSION_MAX_WORDS = 6
 COMPARE_CITE_MIN = 1
 COMPARE_CITE_MAX = 2
-# Fix pack 11 (S1e): the contrast shape is a configuration choice, never a
-# runtime fallback. "pick" is the fix pack 10 shape (a number per group);
-# "sides" is the fix pack 9 shape (one {group, text, cite} side per group), which
-# is known to have worked on the real model. Both keep the fix pack 10 dimension
-# rules and the citation ceilings.
-COMPARE_CONTRAST_MODE = "pick"
-COMPARE_CONTRAST_MODE_VALUES = ("pick", "sides")
+# Fix pack 12 (T1): the contrast section is a QUALITY decision, not a bug fix.
+# The real run paired non-comparable points (a slide-timing note against "terlalu
+# fokus pada algoritma teknis"), because the model chooses the pairs and the
+# backend can only validate the indexes. "off" is therefore the default: the
+# schema has no contrasts property, the addendum carries no contrast instruction,
+# the renderer omits "Perbedaan utama", and the contrast counters stay 0.
+# To be revisited with the Phase 4 human ratings, not before.
+#
+# The mode is a configuration choice, never a runtime fallback. "pick" is the
+# fix pack 10 shape (a number per group); "sides" is the fix pack 9 shape (one
+# {group, text, cite} side per group), which is known to have worked on the real
+# model. Both keep the fix pack 10 dimension rules and the citation ceilings.
+COMPARE_CONTRAST_MODE = "off"
+COMPARE_CONTRAST_MODE_VALUES = ("off", "pick", "sides")
 COMPARE_CONTRAST_SIDES = "sides"
 COMPARE_CONTRAST_GROUP = "group"
 COMPARE_CONTRAST_TEXT = "text"

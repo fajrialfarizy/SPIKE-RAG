@@ -26,7 +26,7 @@ ADDENDUM_VERSION = "1.5"
 STRUCTURED_ADDENDUM_VERSION = "3.1"
 # Fix pack J1e: comparison mode has its own addendum because its answer is JSON
 # validated by the backend, not free prose. The PRD 9.1 core stays verbatim.
-COMPARE_ADDENDUM_VERSION = "2.4"
+COMPARE_ADDENDUM_VERSION = "2.5"
 
 PRD_9_1_SYSTEM_PROMPT = """**IDENTITAS**
 
@@ -148,7 +148,7 @@ Sumber: "Prototipe mudah bocor saat pengiriman." Salah: "Pengalaman prototipe me
 
 SYSTEM_PROMPT_STRUCTURED = f"{PRD_9_1_SYSTEM_PROMPT}\n\n{STRUCTURED_FORMAT_ADDENDUM}"
 
-COMPARE_CITATION_ADDENDUM = """**FORMAT PERBANDINGAN TERSTRUKTUR (v2.4)**
+COMPARE_CITATION_ADDENDUM = """**FORMAT PERBANDINGAN TERSTRUKTUR (v2.5)**
 
 1. Jawab HANYA dengan satu objek JSON yang sesuai skema. Jangan menulis judul kolom, teks Markdown, atau kalimat di luar objek JSON.
 2. Bentuk jawaban: {{"groups": {{"g1": [{{"text": teks, "cite": [alias]}}], "g2": [...]}}, "contrasts": [{{"dimension": topik, "pick": {{"g1": 1, "g2": 2}}}}]}}. Isi groups dengan SATU array poin untuk setiap kunci kelompok.
@@ -173,7 +173,48 @@ Sumber: "Prototipe mudah bocor saat pengiriman." Salah: "Pengalaman prototipe me
     words=config.COMPARE_POINT_MAX_WORDS,
 )
 
-SYSTEM_PROMPT_COMPARE = f"{PRD_9_1_SYSTEM_PROMPT}\n\n{COMPARE_CITATION_ADDENDUM}"
+# Fix pack 12 (T1): with COMPARE_CONTRAST_MODE="off" the addendum carries no
+# contrast instruction at all: no contrast key in the shape, no pick rule, no
+# dimension limits. The PRD 9.1 core above is identical in every mode.
+COMPARE_ADDENDUM_NO_CONTRASTS = """**FORMAT PERBANDINGAN TERSTRUKTUR (v2.5)**
+
+1. Jawab HANYA dengan satu objek JSON yang sesuai skema. Jangan menulis judul kolom, teks Markdown, atau kalimat di luar objek JSON.
+2. Bentuk jawaban: {{"groups": {{"g1": [{{"text": teks, "cite": [alias]}}], "g2": [...]}}}}. Isi groups dengan SATU array poin untuk setiap kunci kelompok.
+3. Gunakan hanya isi blok <dokumen>...</dokumen> yang diberikan. Setiap poin wajib didukung oleh laporan pada kelompoknya sendiri, dan daftar cite poin itu hanya boleh berisi alias dari kelompok tersebut.
+4. Tulis HANYA apa yang dinyatakan dokumen yang kamu sitasi, dengan kekuatan yang sama. Jangan menambah pelajaran atau tafsiran sendiri ("mengajarkan", "pentingnya", "menunjukkan nilai") bila sumber tidak menyatakannya. Jangan menyambung dua fakta dengan "sehingga", "karena", "akibatnya", "membuat", "memengaruhi", "menyebabkan", atau "mengakibatkan" kecuali kalimat sumber yang sama menyatakan hubungan itu. Jangan menggabungkan dua kalimat sumber menjadi satu poin.
+5. JANGAN pernah menyatakan apa yang tidak dilakukan, tidak disiapkan, atau tidak disebutkan oleh sebuah tim atau laporan. Bila dokumen hanya menyebut kebutuhan, tulis kebutuhan itu, bukan tindakan yang sudah dilakukan. Pertahankan kata kerja sumber: "kurang menggali" bukan "mengabaikan".
+6. Jangan menulis alias, report_id, tanda kurung sitasi, atau nama kelompok di dalam "text". Backend menambahkan sitasi di akhir setiap poin.
+7. Judul bagian sudah menyatakan kelompoknya. Jangan memulai poin dengan "Tim juara" atau "Tim belum juara"; tulis poin sebagai pernyataan langsung tentang pengalaman tim yang disitasi.
+8. Rangkum dengan bahasamu sendiri dan sebar poin ke laporan yang BERBEDA dalam satu kelompok bila beberapa laporan tersedia. Jangan mengulang isi yang sama dengan kata berbeda.
+9. Batas: paling banyak {points} poin per kelompok, setiap poin paling banyak {words} kata dan 1-2 alias.
+10. Jangan menulis kalimat cakupan atau bagian Sumber; backend menambahkannya.
+
+Contoh. Sumber: "Tim kurang menggali aspek kelayakan finansial serta regulasi OJK." Salah: "Tim mengabaikan kelayakan finansial dan regulasi." Benar: "Tim kurang menggali aspek kelayakan finansial dan regulasi OJK."
+Sumber: "Margin laba tipis akibat tingginya biaya pengeringan buatan." Salah: "Kelemahan riset rantai pasok mengakibatkan margin laba tipis." Benar: "Margin laba tipis akibat tingginya biaya pengeringan buatan."
+Sumber: "Prototipe mudah bocor saat pengiriman." Salah: "Pengalaman prototipe mengajarkan pentingnya uji ketahanan sebelum pengiriman." Benar: "Prototipe mudah bocor saat pengiriman."
+""".format(
+    points=config.COMPARE_POINTS_PER_GROUP_MAX,
+    words=config.COMPARE_POINT_MAX_WORDS,
+)
+
+
+def compare_addendum(mode=None) -> str:
+    """The comparison addendum for one contrast mode (fix pack 12, T1)."""
+    # Local import: prompts is imported by compare_answer's callers, and the mode
+    # validation has exactly one owner (compare_answer.contrast_mode).
+    from core import compare_answer
+
+    if compare_answer.contrast_mode(mode) == "off":
+        return COMPARE_ADDENDUM_NO_CONTRASTS
+    return COMPARE_CITATION_ADDENDUM
+
+
+def compare_system_prompt(mode=None) -> str:
+    """PRD 9.1 core plus the comparison addendum for the configured mode."""
+    return f"{PRD_9_1_SYSTEM_PROMPT}\n\n{compare_addendum(mode)}"
+
+
+SYSTEM_PROMPT_COMPARE = compare_system_prompt()
 
 OUT_OF_SCOPE_RESPONSE = (
     "Maaf, saya merupakan asisten AI Lab Prestasi yang berfokus pada informasi, "

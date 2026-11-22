@@ -351,6 +351,8 @@ def _validate(payload, *, alias_map=None, report_group=None, keys=None):
         alias_map=alias_map or ALIAS_MAP,
         report_group=report_group or REPORT_GROUP,
         retrieved=list((alias_map or ALIAS_MAP).values()),
+        # Fix pack 12 (T1): the suite covers the pick shape, so it selects it.
+        mode="pick",
     )
 
 

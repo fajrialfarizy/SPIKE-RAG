@@ -33,7 +33,7 @@ from tests.stubs import (
     keyed_compare_payload,
 )
 
-pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract", "compare_contrast_pick")
 
 AWARD = "Juara 1"
 FINALIST = "Finalis"
@@ -175,8 +175,8 @@ def test_the_heading_is_a_bold_display_label_on_its_own_line():
 def test_the_addendum_tells_the_model_not_to_restate_the_group():
     addendum = prompts.COMPARE_CITATION_ADDENDUM
 
-    assert prompts.COMPARE_ADDENDUM_VERSION == "2.4"
-    assert "(v2.4)" in addendum
+    assert prompts.COMPARE_ADDENDUM_VERSION == "2.5"
+    assert "(v2.5)" in addendum
     assert 'Jangan memulai poin dengan "Tim juara"' in addendum
     assert "poin yang benar-benar sebanding" in addendum
 

@@ -25,6 +25,17 @@ def fast_prompt_estimator():
 
 
 @pytest.fixture
+def compare_contrast_pick(monkeypatch):
+    """
+    Fix pack 12 (T1): "off" is the default contrast mode, so the suites that
+    cover the pick and sides shapes select their mode explicitly instead of
+    inheriting the default.
+    """
+    monkeypatch.setattr(config, "COMPARE_CONTRAST_MODE", "pick")
+    yield
+
+
+@pytest.fixture
 def legacy_answer_contract(monkeypatch):
     """
     The pre-fix-pack-9 contract for the older module suites.

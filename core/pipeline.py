@@ -862,7 +862,7 @@ class RagPipeline:
         response_format = compare_answer.response_format(list(group_keys), mode)
         try:
             completion = self.llm.complete(
-                prompts.SYSTEM_PROMPT_COMPARE,
+                prompts.compare_system_prompt(),
                 user_prompt,
                 temperature=config.LLM_TEMPERATURE_CHAT,
                 max_tokens=config.LLM_MAX_OUTPUT_TOKENS_COMPARE,

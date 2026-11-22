@@ -12,7 +12,8 @@ Runs the two real comparison questions through the FULL pipeline:
 - a scripted LLM (no network, no key), with payloads converted from the points
   the earlier real run reported.
 
-Both ``COMPARE_CONTRAST_MODE`` values are exercised. In "pick" mode the model
+All ``COMPARE_CONTRAST_MODE`` values are exercised. In "off" mode the payload
+carries no contrasts at all. In "pick" mode the model
 answers with the fix pack 10 payload and the backend renders the validated point
 text; in "sides" mode the same run's points are converted to the fix pack 9 side
 shape, which is known to work on the real model.
@@ -147,11 +148,14 @@ class ScriptedCompareLLM(LLMClient):
         if response_format is not None:
             schema_check.assert_valid_response_format(response_format)
             self.schemas_checked.append(config.COMPARE_JSON_SCHEMA_NAME)
-            payload = (
-                self.pick_payload
-                if config.COMPARE_CONTRAST_MODE == "pick"
-                else self.sides_payload
-            )
+            if config.COMPARE_CONTRAST_MODE == "off":
+                # Fix pack 12 (T1): the off schema has no contrasts property, so
+                # the double returns exactly what a conforming model would.
+                payload = {"groups": self.pick_payload["groups"]}
+            elif config.COMPARE_CONTRAST_MODE == "pick":
+                payload = self.pick_payload
+            else:
+                payload = self.sides_payload
             content = json.dumps(payload, ensure_ascii=False)
         else:
             content = json.dumps(self.analyzer, ensure_ascii=False)

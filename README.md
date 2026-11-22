@@ -88,6 +88,29 @@ Mode Drive (`KB_SOURCE=drive`) memakai service account read-only untuk mengunduh
 `manifest.json` + `chroma_backup.zip`, memverifikasi checksum, mengekstrak ke direktori versi baru,
 lalu berpindah secara atomik. Bila gagal, versi lama tetap dipakai.
 
+## Mode perbandingan
+
+Perbandingan dua kelompok memakai jawaban JSON terstruktur yang divalidasi backend.
+Bagian **Perbedaan utama** (contrast) **dimatikan secara default**
+(`COMPARE_CONTRAST_MODE = "off"`). Keputusan ini diambil dari run nyata: pasangan poin
+antar kelompok tidak sebanding (mis. catatan waktu slide dipasangkan dengan "terlalu
+fokus pada algoritma teknis"), karena modellah yang memilih pasangan dan backend hanya
+dapat memvalidasi nomor poinnya. Ini keputusan kualitas, bukan perbaikan bug, dan akan
+ditinjau kembali bersama penilaian manusia Phase 4.
+
+Nilai yang tersedia, dipilih **hanya** lewat `config.py` (tidak pernah otomatis saat
+runtime):
+
+| Nilai | Skema | Prompt | Render |
+| --- | --- | --- | --- |
+| `off` (default) | tanpa properti `contrasts` | tanpa instruksi contrast | tanpa "Perbedaan utama" |
+| `pick` | `{"dimension", "pick": {"g1": "1", ...}}` | aturan contrast (v2.5) | memakai teks poin tervalidasi |
+| `sides` | `{"dimension", "sides": [{group, text, cite}]}` | aturan contrast (v2.5) | memakai sisi tervalidasi |
+
+Biaya statis satu panggilan compare (system prompt + skema, tokenizer e5): `off` 1.606
+vs `pick` 1.983 token untuk dua kelompok (hemat 377), dan 1.718 vs 2.131 untuk tiga
+kelompok. Completion juga lebih pendek karena larik contrasts tidak lagi ditulis.
+
 ## Pengujian
 
 ```bash

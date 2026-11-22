@@ -23,7 +23,7 @@ from tests.stubs import (
     keyed_compare_payload,
 )
 
-pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract", "compare_contrast_pick")
 
 AWARD = "Juara 1"
 FINALIST = "Finalis"
@@ -99,7 +99,7 @@ def payload(groups, contrasts=None):
 
 # -- J1a: the schema -------------------------------------------------------
 def test_the_schema_is_strict_and_keyed_by_group():
-    schema = compare_answer.build_schema(["g1", "g2"])
+    schema = compare_answer.build_schema(["g1", "g2"], "pick")
 
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == {"groups", "contrasts"}

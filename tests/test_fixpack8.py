@@ -31,7 +31,7 @@ from tests.stubs import (
     WordCountTokenizer,
 )
 
-pytestmark = pytest.mark.usefixtures("legacy_answer_contract")
+pytestmark = pytest.mark.usefixtures("legacy_answer_contract", "compare_contrast_pick")
 
 AWARD_LABEL = "meraih penghargaan"
 FINALIST_LABEL = "belum juara (finalis)"
@@ -83,7 +83,7 @@ def _validate(payload):
 
 
 def test_the_schema_has_paired_contrasts_instead_of_differences():
-    schema = compare_answer.build_schema(list(GROUP_KEYS))
+    schema = compare_answer.build_schema(list(GROUP_KEYS), "pick")
 
     assert set(schema["required"]) == {"groups", "contrasts"}
     assert "differences" not in schema["properties"]
@@ -353,7 +353,7 @@ def test_the_free_text_addendum_carries_the_fidelity_rules():
 def test_the_compare_addendum_carries_the_fidelity_rules():
     addendum = prompts.COMPARE_CITATION_ADDENDUM
 
-    assert prompts.COMPARE_ADDENDUM_VERSION == "2.4"
+    assert prompts.COMPARE_ADDENDUM_VERSION == "2.5"
     assert '"kurang menggali" bukan "mengabaikan"' in addendum
     assert "Jangan menyambung dua fakta" in addendum
 

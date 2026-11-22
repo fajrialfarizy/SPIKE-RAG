@@ -174,7 +174,7 @@ def test_every_schema_the_app_sends_is_within_the_documented_subset():
 
 
 def test_the_pick_value_is_a_documented_string_enum():
-    schema = compare_answer.build_schema(["g1", "g2"])
+    schema = compare_answer.build_schema(["g1", "g2"], "pick")
     pick = schema["properties"]["contrasts"]["items"]["properties"]["pick"]
 
     assert pick["properties"]["g1"] == {

@@ -228,6 +228,8 @@ def _validate(payload, *, keys=None, alias_map=None, report_group=None):
         alias_map=alias_map,
         report_group=report_group or REPORT_GROUP,
         retrieved=list(alias_map.values()),
+        # Fix pack 12 (T1): the suite covers the pick shape, so it selects it.
+        mode="pick",
     )
 
 
@@ -239,7 +241,7 @@ def _compare_payload(award_points, finalist_points, contrasts=None):
 
 
 def test_the_contrast_schema_picks_a_number_per_group():
-    schema = compare_answer.build_schema(["g1", "g2"])
+    schema = compare_answer.build_schema(["g1", "g2"], "pick")
 
     contrast = schema["properties"]["contrasts"]["items"]
     assert contrast["additionalProperties"] is False
