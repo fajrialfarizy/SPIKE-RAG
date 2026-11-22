@@ -86,8 +86,8 @@ def comparison_pipeline(
 QUESTION = "Apa perbedaan pembelajaran tim juara dan tim belum juara?"
 
 
-def payload(groups, differences=None):
-    return json.dumps({"groups": groups, "differences": differences or []}, ensure_ascii=False)
+def payload(groups, contrasts=None):
+    return json.dumps({"groups": groups, "contrasts": contrasts or []}, ensure_ascii=False)
 
 
 # -- J1a: the schema -------------------------------------------------------
@@ -95,7 +95,17 @@ def test_the_schema_is_strict_and_has_no_optional_object():
     schema = compare_answer.build_schema(["meraih penghargaan", "belum juara (finalis)"])
 
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == {"groups", "differences"}
+    assert set(schema["required"]) == {"groups", "contrasts"}
+    contrast_item = schema["properties"]["contrasts"]["items"]
+    assert contrast_item["additionalProperties"] is False
+    assert set(contrast_item["required"]) == {"dimension", "sides"}
+    side_item = contrast_item["properties"]["sides"]["items"]
+    assert side_item["additionalProperties"] is False
+    assert set(side_item["required"]) == {"label", "text", "cite"}
+    assert side_item["properties"]["label"]["enum"] == [
+        "meraih penghargaan",
+        "belum juara (finalis)",
+    ]
     group_item = schema["properties"]["groups"]["items"]
     assert group_item["additionalProperties"] is False
     assert set(group_item["required"]) == {"label", "points"}
@@ -150,8 +160,19 @@ def test_a_valid_payload_is_rendered_by_the_backend_with_citations_at_the_end():
             ],
             [
                 {
-                    "text": "Kelompok juara dan belum juara berbeda pada validasi lapangan.",
-                    "cite": ["LAP1", "LAP4"],
+                    "dimension": "validasi lapangan",
+                    "sides": [
+                        {
+                            "label": "meraih penghargaan",
+                            "text": "Memvalidasi masalah lewat wawancara.",
+                            "cite": ["LAP1"],
+                        },
+                        {
+                            "label": "belum juara (finalis)",
+                            "text": "Mengandalkan data teknis.",
+                            "cite": ["LAP4"],
+                        },
+                    ],
                 }
             ],
         )
@@ -161,9 +182,12 @@ def test_a_valid_payload_is_rendered_by_the_backend_with_citations_at_the_end():
 
     assert result.status is AnswerStatus.ANSWERED
     lines = result.answer.splitlines()
-    assert "Tim yang meraih penghargaan (Juara 1-3, Juara Harapan, Most Aspiring)" in lines
-    assert "Tim belum juara (finalis)" in lines
+    assert "**Tim yang meraih penghargaan (Juara 1-3, Juara Harapan, Most Aspiring)**" in lines
+    assert "**Tim belum juara (finalis)**" in lines
     assert "**Perbedaan utama**" in lines
+    assert "- validasi lapangan" in lines
+    side = next(line for line in lines if line.startswith("  - Tim belum juara"))
+    assert side.endswith("[RPT2001]")
     bullet = next(line for line in lines if line.startswith("- Tim juara memvalidasi"))
     assert bullet.endswith("[RPT1001]")
     assert result.cited_report_ids == ["RPT1001", "RPT2001"]

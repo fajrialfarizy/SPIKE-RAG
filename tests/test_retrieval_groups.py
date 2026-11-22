@@ -228,7 +228,7 @@ def structured_payload():
                     ],
                 },
             ],
-            "differences": [],
+            "contrasts": [],
         }
     )
 

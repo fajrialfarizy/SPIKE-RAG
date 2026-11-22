@@ -92,10 +92,20 @@ def comparison_pipeline(structured_payload):
     return pipeline, llm
 
 
-def payload(groups, differences=None):
+def payload(groups, contrasts=None):
     return json.dumps(
-        {"groups": groups, "differences": differences or []}, ensure_ascii=False
+        {"groups": groups, "contrasts": contrasts or []}, ensure_ascii=False
     )
+
+
+def contrast(dimension, award_text, finalist_text, award_cite="LAP1", finalist_cite="LAP4"):
+    return {
+        "dimension": dimension,
+        "sides": [
+            {"label": AWARD_LABEL, "text": award_text, "cite": [award_cite]},
+            {"label": FINALIST_LABEL, "text": finalist_text, "cite": [finalist_cite]},
+        ],
+    }
 
 
 def groups_payload():
@@ -142,15 +152,18 @@ def test_the_schema_enum_and_the_context_use_the_model_facing_names():
     assert f'- {AWARD_LABEL}: [LAP1]' in call["user_prompt"]
 
 
-def test_the_heading_is_the_plain_display_label_without_markdown_bold():
+def test_the_heading_is_a_bold_display_label_on_its_own_line():
     pipeline, _ = comparison_pipeline(payload(groups_payload()))
 
     result = pipeline.run(QUESTION)
 
     lines = result.answer.splitlines()
-    assert AWARD_HEADING in lines
-    assert FINALIST_HEADING in lines
-    assert not any(line.startswith("**") and "Sumber" not in line for line in lines)
+    assert f"**{AWARD_HEADING}**" in lines
+    assert f"**{FINALIST_HEADING}**" in lines
+    # A heading block is the bold line, a blank line, then the bullets.
+    index = lines.index(f"**{AWARD_HEADING}**")
+    assert lines[index + 1] == ""
+    assert lines[index + 2].startswith("- ")
     assert result.debug.coverage == (
         f"Ringkasan ini didasarkan pada 1 dari 3 laporan {AWARD_LABEL} dan "
         f"1 dari 2 laporan {FINALIST_LABEL}."
@@ -160,45 +173,42 @@ def test_the_heading_is_the_plain_display_label_without_markdown_bold():
 def test_the_addendum_tells_the_model_not_to_restate_the_group():
     addendum = prompts.COMPARE_CITATION_ADDENDUM
 
-    assert prompts.COMPARE_ADDENDUM_VERSION == "2.1"
-    assert "(v2.1)" in addendum
+    assert prompts.COMPARE_ADDENDUM_VERSION == "2.2"
+    assert "(v2.2)" in addendum
     assert 'Jangan memulai poin dengan "Tim juara"' in addendum
     assert "berbeda pada dimensi yang SAMA" not in addendum
     assert "dimensi yang SAMA" in addendum
 
 
-# -- L3: differences must cite both groups ---------------------------------
-def test_a_difference_citing_both_groups_is_kept():
+# -- L3: a contrast pairs one supported side with each group -----------------
+def test_a_paired_contrast_is_rendered_with_nested_sides():
     pipeline, _ = comparison_pipeline(
         payload(
             groups_payload(),
-            [
-                {
-                    "text": f"Kelompok {AWARD_LABEL} dan {FINALIST_LABEL} berbeda "
-                    "pada kedalaman validasi pasar.",
-                    "cite": ["LAP1", "LAP4"],
-                }
-            ],
+            [contrast("kedalaman validasi pasar", "Wawancara pengguna.", "Data teknis.")],
         )
     )
 
     result = pipeline.run(QUESTION)
 
-    assert f"**" not in result.answer or "**Sumber**" in result.answer
-    assert "berbeda pada kedalaman validasi pasar" in result.answer
-    assert "- " in result.answer
-    assert "[RPT1001] [RPT2001]" in result.answer
+    lines = result.answer.splitlines()
+    assert "**Perbedaan utama**" in lines
+    assert "- kedalaman validasi pasar" in lines
+    assert f"  - {AWARD_HEADING}: Wawancara pengguna. [RPT1001]" in lines
+    assert f"  - {FINALIST_HEADING}: Data teknis. [RPT2001]" in lines
     assert result.debug.negation["count"] == 0
 
 
-def test_a_difference_citing_one_group_only_is_dropped_and_counted():
+def test_a_contrast_without_one_side_is_dropped_and_counted():
     pipeline, _ = comparison_pipeline(
         payload(
             groups_payload(),
             [
                 {
-                    "text": "Kedalaman validasi pasar menjadi pembeda utama.",
-                    "cite": ["LAP1"],
+                    "dimension": "kedalaman validasi pasar",
+                    "sides": [
+                        {"label": AWARD_LABEL, "text": "Wawancara.", "cite": ["LAP1"]}
+                    ],
                 }
             ],
         )
@@ -206,35 +216,41 @@ def test_a_difference_citing_one_group_only_is_dropped_and_counted():
 
     result = pipeline.run(QUESTION)
 
-    assert "Kedalaman validasi pasar menjadi pembeda utama." not in result.answer
-    assert "Perbedaan utama" not in result.answer
-    assert result.debug.incidents["difference_missing_group"] == 1
+    assert "kedalaman validasi pasar" not in result.answer
+    assert "**Perbedaan utama**" not in result.answer
+    assert result.debug.incidents["contrast_invalid"] == 1
 
 
-def test_all_dropped_differences_omit_the_section_entirely():
+def test_a_contrast_with_a_duplicate_side_is_dropped_and_counted():
     pipeline, _ = comparison_pipeline(
         payload(
             groups_payload(),
             [
-                {"text": "Pembeda pertama.", "cite": ["LAP1"]},
-                {"text": "Pembeda kedua.", "cite": ["LAP4"]},
+                {
+                    "dimension": "kedalaman validasi pasar",
+                    "sides": [
+                        {"label": AWARD_LABEL, "text": "Satu.", "cite": ["LAP1"]},
+                        {"label": AWARD_LABEL, "text": "Dua.", "cite": ["LAP2"]},
+                        {"label": FINALIST_LABEL, "text": "Tiga.", "cite": ["LAP4"]},
+                    ],
+                }
             ],
         )
     )
 
     result = pipeline.run(QUESTION)
 
-    assert "Pembeda pertama" not in result.answer
-    assert "Pembeda kedua" not in result.answer
-    assert "Perbedaan utama" not in result.answer
-    assert result.debug.incidents["difference_missing_group"] == 2
+    assert "kedalaman validasi pasar" not in result.answer
+    assert result.debug.incidents["contrast_invalid"] == 1
 
 
-def test_the_compare_addendum_limits_differences_to_two():
-    assert config.COMPARE_DIFFERENCES_MAX == 2
-    assert "paling banyak 4 poin per kelompok, 2 butir differences" in (
-        prompts.COMPARE_CITATION_ADDENDUM
-    )
+def test_the_compare_addendum_limits_contrasts_to_two():
+    assert config.COMPARE_CONTRASTS_MAX == 2
+    assert config.COMPARE_POINTS_PER_GROUP_MAX == 3
+    addendum = prompts.COMPARE_CITATION_ADDENDUM
+    assert "paling banyak 3 poin per kelompok, 2 contrasts" in addendum
+    assert "dimensi paling banyak 8 kata" in addendum
+    assert "teks setiap sisi paling banyak 35 kata" in addendum
 
 
 # -- L4: negation metric ---------------------------------------------------
@@ -384,18 +400,32 @@ def test_free_text_uses_separate_brackets_with_one_space():
 def test_the_compare_renderer_uses_the_same_format():
     validation = compare_answer.CompareValidation(
         sections=[],
-        differences=[
-            compare_answer.ComparePoint(
-                text="Kedalaman validasi pasar berbeda.", report_ids=["RPT1001", "RPT2001"]
+        contrasts=[
+            compare_answer.CompareContrast(
+                dimension="Kedalaman validasi pasar",
+                sides=[
+                    compare_answer.CompareContrastSide(
+                        label=AWARD_LABEL,
+                        text="Wawancara pengguna.",
+                        report_ids=["RPT1001"],
+                    ),
+                    compare_answer.CompareContrastSide(
+                        label=FINALIST_LABEL,
+                        text="Data teknis.",
+                        report_ids=["RPT2001"],
+                    ),
+                ],
             )
         ],
         incidents={},
         cited_report_ids=["RPT1001", "RPT2001"],
     )
 
-    rendered = compare_answer.render_answer(validation)
+    rendered = compare_answer.render_answer(validation, "achievement_group")
 
-    assert "- Kedalaman validasi pasar berbeda. [RPT1001] [RPT2001]" in rendered
+    assert "- Kedalaman validasi pasar" in rendered
+    assert f"  - {AWARD_HEADING}: Wawancara pengguna. [RPT1001]" in rendered
+    assert f"  - {FINALIST_HEADING}: Data teknis. [RPT2001]" in rendered
 
 
 # -- L1d: context normalization -------------------------------------------

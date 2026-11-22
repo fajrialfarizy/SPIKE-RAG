@@ -267,7 +267,7 @@ def comparison_base(
                 },
                 {"label": "belum juara (finalis)", "points": []},
             ],
-            "differences": [],
+            "contrasts": [],
         }
     )
     llm = FakeLLM(

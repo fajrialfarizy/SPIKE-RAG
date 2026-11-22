@@ -375,8 +375,10 @@ def _bullets(count, report_id, prefix):
     return [f"- {prefix} {index} [RPT{report_id}]" for index in range(count)]
 
 
-def test_the_addendum_v1_4_caps_points_per_report_and_keeps_the_prd_core():
-    assert prompts.ADDENDUM_VERSION == "1.4"
+def test_the_addendum_v1_5_caps_points_per_report_and_keeps_the_prd_core():
+    # Fix pack 8 bumped 1.4 -> 1.5 for the source-fidelity rules; the per-report
+    # cap from fix pack 7 is still there.
+    assert prompts.ADDENDUM_VERSION == "1.5"
     assert prompts.SYSTEM_PROMPT.startswith(prompts.PRD_9_1_SYSTEM_PROMPT)
     assert (
         f"paling banyak {config.ANSWER_MAX_BULLETS_PER_REPORT} poin untuk setiap "
@@ -396,16 +398,25 @@ def test_trim_bullets_keeps_the_real_shape_balanced_across_reports():
 
     lines = trimmed.splitlines()
     kept = [line for line in lines if line.startswith("- ")]
-    assert len(kept) == config.ANSWER_MAX_BULLETS
-    assert dropped == 5
+    # Fix pack 8: the per-report cap applies even inside the six-bullet budget,
+    # so the eight RPT0001 bullets keep only two and five bullets survive.
+    assert len(kept) == 5
+    assert dropped == 6
     for report_id in ("RPT0001", "RPT0002", "RPT0003"):
         assert report_id in trimmed
     assert "Pembelajaran utama tim:" in lines
     assert "Secara ringkas, ketiga laporan menekankan persiapan riset." in lines
 
 
-def test_trim_bullets_leaves_a_six_bullet_answer_untouched():
-    text = "Intro.\n" + "\n".join(_bullets(6, "0001", "Poin"))
+def test_trim_bullets_leaves_a_compliant_six_bullet_answer_untouched():
+    text = (
+        "Intro.\n"
+        + "\n".join(
+            _bullets(2, "0001", "Poin")
+            + _bullets(2, "0002", "Poin")
+            + _bullets(2, "0003", "Poin")
+        )
+    )
 
     trimmed, dropped = trim_bullets(text)
 
@@ -437,10 +448,10 @@ def test_the_pipeline_trims_an_overlong_answer_and_rebuilds_the_sources():
     result = pipeline.run("Bandingkan evaluasi RPT0001, RPT0002, dan RPT0003.")
 
     assert result.status is AnswerStatus.ANSWERED
-    assert result.debug.dropped_bullets == 5
-    assert result.debug.incidents["bullets_trimmed"] == 5
+    assert result.debug.dropped_bullets == 6
+    assert result.debug.incidents["bullets_trimmed"] == 6
     assert result.cited_report_ids == ["RPT0001", "RPT0002", "RPT0003"]
     body, _, sources = result.answer.partition("**Sumber**")
-    assert len([line for line in body.splitlines() if line.startswith("- ")]) == 6
+    assert len([line for line in body.splitlines() if line.startswith("- ")]) == 5
     for report_id in ("RPT0001", "RPT0002", "RPT0003"):
         assert f"- {report_id} " in sources
