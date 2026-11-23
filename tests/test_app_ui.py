@@ -232,7 +232,13 @@ def test_a_missing_settings_section_shows_the_configuration_error(tmp_path, monk
     at.session_state["_settings_override"] = {}
     at.run()
 
-    assert T.LOGIN_CONFIG_ERROR in [error.value for error in at.error]
+    errors = [error.value for error in at.error]
+    # Fix pack 13a: the fixed text still leads, and the failing key name is shown
+    # under it as a whitelisted code.
+    assert any(value.startswith(T.LOGIN_CONFIG_ERROR) for value in errors)
+    assert any(
+        "Kode: CFG/missing_key:auth.username" in value for value in errors
+    )
 
 
 def test_a_correct_login_opens_the_chat_and_loads_the_runtime(tmp_path, monkeypatch):
