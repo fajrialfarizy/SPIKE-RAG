@@ -25,6 +25,11 @@ EMBEDDING_QUERY_PREFIX = "query: "
 EMBEDDING_DIMENSION = 384
 # One dummy query at startup so the first real question does not load the model.
 EMBEDDING_WARMUP_QUERY = "pemanasan model embedding"
+# Fix pack 13a: a Hugging Face download that happens inside a Streamlit script run
+# must fail instead of hanging forever. huggingface_hub reads this timeout from the
+# environment, so the embedder sets HF_HUB_DOWNLOAD_TIMEOUT from this value before
+# importing sentence-transformers.
+EMBEDDER_DOWNLOAD_TIMEOUT_SECONDS = 600
 
 # LLM Configuration (Groq)
 LLM_MODEL_NAME = "openai/gpt-oss-20b"
