@@ -9,13 +9,14 @@ read-only.** Artefak (zip + manifest) diunggah **manual** lewat Drive web. Akun
 
 | Metrik | Nilai (mesin pengembangan) | Status |
 | --- | --- | --- |
-| `pip install -r requirements.txt` (venv baru, cache pip hangat) | lihat laporan Fix Pack 12 | terukur |
-| `import app` (Streamlit + chromadb + torch) | ± 2-5 detik | terukur |
-| `build_runtime` (Chroma + model e5 + warm-up) | ± 70-100 detik | terukur |
-| RSS setelah siap (`rss_mb`) | ± 920-970 MB | terukur |
+| `pip install -r requirements.txt` (venv baru Python 3.12, cache pip hangat) | 657 detik (± 11 menit) | terukur |
+| `import app` + `core.pipeline` (Streamlit + chromadb + torch) | ± 6 detik | terukur |
+| Layar login headless (AppTest) | ± 4,6 detik | terukur |
+| `build_runtime` (Chroma + model e5 + warm-up) | ± 79-101 detik | terukur |
+| RSS setelah siap (`rss_mb`) | ± 920-1.040 MB | terukur |
 | Kecocokan pin Linux / Streamlit Cloud | — | **belum diverifikasi** |
 
-> **Penting:** ± 920 MB lebih besar dari batas bawah Streamlit Cloud (690 MB). Pilih
+> **Penting:** ± 1,0 GB lebih besar dari batas bawah Streamlit Cloud (690 MB). Pilih
 > mesin dengan RAM ≥ 1 GB. Bila hanya tersedia 690 MB, aplikasi akan kehabisan memori;
 > alternatifnya jalur ONNX untuk model yang sama, yang **belum diimplementasikan**
 > (rencananya ada di `docs/ONNX_PLAN.md`).
