@@ -1,12 +1,13 @@
-# Streamlit configuration for Lab Prestasi.
+# Streamlit configuration for SPIKE RAG.
 # Keys verified against `streamlit config show` on Streamlit 1.67.0 (2026-11-20).
 
 [theme]
-# One blue palette for the whole app; the header and buttons follow it.
-primaryColor = "#169090"
-backgroundColor = "#F4FAFA"
-secondaryBackgroundColor = "#E2F0F0"
-textColor = "#0B2B2B"
+# Palette sampled from the logo (assets/spike_logo.png): bright blue accent on a
+# pale blue canvas with navy text. app.py adds the Inter font and the sidebar.
+primaryColor = "#2493EA"
+backgroundColor = "#F5F9FD"
+secondaryBackgroundColor = "#E3EEF8"
+textColor = "#0F2A44"
 
 [browser]
 # Do not send usage statistics to Streamlit.

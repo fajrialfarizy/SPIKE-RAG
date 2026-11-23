@@ -328,14 +328,31 @@ def _record_message(now: Optional[float] = None) -> None:
 # UI
 
 
+LOGO_PATH = Path(__file__).resolve().parent / config.THEME_LOGO_PATH
+
 THEME_CSS = """
 <style>
-  /* One blue family: the header, buttons, sidebar and inputs share it. */
-  .stApp h1 { color: %(primary)s; letter-spacing: -0.01em; }
+  /* Inter is loaded from the web font CDN; the stack in config falls back to
+     the local sans-serif faces when that request fails. */
+  @import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+  html, body, .stApp,
+  .stApp [data-testid="stMarkdownContainer"],
+  .stApp input, .stApp textarea, .stApp button,
+  .stApp [data-testid="stChatInput"] textarea {
+      font-family: %(font)s;
+  }
+  /* Logo blue: bright accent on top, navy for headings and chrome. */
+  .stApp h1 {
+      color: %(navy)s;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.15rem;
+  }
   .spike-tagline {
-      color: %(dark)s;
-      font-size: 1.05rem;
-      margin: -0.5rem 0 1.4rem 0;
+      color: %(navy)s;
+      font-size: 1.02rem;
+      font-weight: 500;
+      margin: 0 0 1.3rem 0;
       padding-left: 0.8rem;
       border-left: 4px solid %(primary)s;
   }
@@ -343,50 +360,57 @@ THEME_CSS = """
   .stApp div.stFormSubmitButton > button {
       background-color: %(primary)s;
       border: 1px solid %(primary)s;
+      border-radius: 8px;
       color: #ffffff;
       font-weight: 600;
   }
   .stApp div.stButton > button:hover,
   .stApp div.stFormSubmitButton > button:hover {
-      background-color: %(dark)s;
-      border-color: %(dark)s;
+      background-color: %(navy)s;
+      border-color: %(navy)s;
       color: #ffffff;
   }
   .stApp div.stButton > button p, .stApp div.stFormSubmitButton > button p {
       color: inherit;
   }
-  section[data-testid="stSidebar"] { background-color: %(primary)s; }
+  section[data-testid="stSidebar"] { background-color: %(navy)s; }
   section[data-testid="stSidebar"] p,
   section[data-testid="stSidebar"] span { color: #ffffff; }
   section[data-testid="stSidebar"] div.stButton > button {
       background-color: #ffffff;
       border-color: #ffffff;
   }
-  section[data-testid="stSidebar"] div.stButton > button p { color: %(primary)s; }
+  section[data-testid="stSidebar"] div.stButton > button p { color: %(navy)s; }
   .stApp [data-testid="stChatInput"] { border-color: %(primary)s; }
   .stApp [data-testid="stChatInputSubmitButton"] { color: %(primary)s; }
+  .stApp [data-testid="stChatMessage"] { border-radius: 12px; }
 </style>
 """
 
 
 def apply_theme() -> None:
-    """Inject the blue palette; config owns the colours."""
+    """Inject the logo palette and the Inter font; config owns both."""
     st.markdown(
         THEME_CSS
         % {
             "primary": config.THEME_PRIMARY_COLOR,
-            "dark": config.THEME_PRIMARY_DARK_COLOR,
+            "navy": config.THEME_PRIMARY_DARK_COLOR,
+            "font": config.THEME_FONT_FAMILY,
         },
         unsafe_allow_html=True,
     )
 
 
 def render_header() -> None:
-    """App name, then the smaller tagline underneath."""
-    st.title(T.APP_NAME)
-    st.markdown(
-        f'<p class="spike-tagline">{T.TAGLINE}</p>', unsafe_allow_html=True
-    )
+    """Logo beside the app name, with the smaller tagline underneath."""
+    logo_column, text_column = st.columns([1, 7], vertical_alignment="center")
+    with logo_column:
+        st.image(str(LOGO_PATH), width=84)
+    with text_column:
+        st.title(T.APP_NAME)
+        st.markdown(
+            f'<p class="spike-tagline">{T.TAGLINE}</p>', unsafe_allow_html=True
+        )
 
 
 def render_login(settings: Settings) -> None:
@@ -567,6 +591,7 @@ def _render_startup_failure(exc: BaseException) -> None:
 def main() -> None:
     st.set_page_config(
         page_title=config.APP_TITLE,
+        page_icon=str(LOGO_PATH),
         layout=config.APP_LAYOUT,
     )
     apply_theme()

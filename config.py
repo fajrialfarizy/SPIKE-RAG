@@ -819,9 +819,22 @@ LEAK_OVERLAP_RATIO_THRESHOLD = 0.5
 APP_TITLE = "SPIKE RAG"
 APP_LAYOUT = "centered"
 
-# One blue palette for the whole UI (header, buttons, sidebar, accents).
-THEME_PRIMARY_COLOR = "#169090"
-THEME_PRIMARY_DARK_COLOR = "#0F6E6E"
+# Blue palette taken from the SPIKE RAG logo (assets/spike_logo.png): the bright
+# blue is the accent (buttons, focus, highlights) and the deep navy carries
+# headings, the tagline and the sidebar.
+THEME_PRIMARY_COLOR = "#2493EA"
+THEME_PRIMARY_DARK_COLOR = "#0F4479"
+THEME_BACKGROUND_COLOR = "#F5F9FD"
+THEME_SECONDARY_BACKGROUND_COLOR = "#E3EEF8"
+THEME_TEXT_COLOR = "#0F2A44"
+# Inter first, then the local sans-serif stack, so the app still renders when the
+# web font cannot be fetched.
+THEME_FONT_FAMILY = (
+    '"Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial,'
+    " sans-serif"
+)
+# Shown in the header and used as the page icon; relative to the project root.
+THEME_LOGO_PATH = "assets/spike_logo.png"
 
 # Password hashing (OWASP Password Storage Cheat Sheet, checked 2026-11-20:
 # PBKDF2-HMAC-SHA256 with 600,000 iterations).
