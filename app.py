@@ -1,5 +1,5 @@
 """
-Lab Prestasi — Streamlit entry point (Phase 3).
+SPIKE RAG — Streamlit entry point (Phase 3).
 
 Layer boundaries: this module reads ``st.secrets``/environment, builds a
 ``core.settings.Settings`` and owns the UI, the session state and the cached
@@ -328,9 +328,69 @@ def _record_message(now: Optional[float] = None) -> None:
 # UI
 
 
+THEME_CSS = """
+<style>
+  /* One blue family: the header, buttons, sidebar and inputs share it. */
+  .stApp h1 { color: %(primary)s; letter-spacing: -0.01em; }
+  .spike-tagline {
+      color: %(dark)s;
+      font-size: 1.05rem;
+      margin: -0.5rem 0 1.4rem 0;
+      padding-left: 0.8rem;
+      border-left: 4px solid %(primary)s;
+  }
+  .stApp div.stButton > button,
+  .stApp div.stFormSubmitButton > button {
+      background-color: %(primary)s;
+      border: 1px solid %(primary)s;
+      color: #ffffff;
+      font-weight: 600;
+  }
+  .stApp div.stButton > button:hover,
+  .stApp div.stFormSubmitButton > button:hover {
+      background-color: %(dark)s;
+      border-color: %(dark)s;
+      color: #ffffff;
+  }
+  .stApp div.stButton > button p, .stApp div.stFormSubmitButton > button p {
+      color: inherit;
+  }
+  section[data-testid="stSidebar"] { background-color: %(primary)s; }
+  section[data-testid="stSidebar"] p,
+  section[data-testid="stSidebar"] span { color: #ffffff; }
+  section[data-testid="stSidebar"] div.stButton > button {
+      background-color: #ffffff;
+      border-color: #ffffff;
+  }
+  section[data-testid="stSidebar"] div.stButton > button p { color: %(primary)s; }
+  .stApp [data-testid="stChatInput"] { border-color: %(primary)s; }
+  .stApp [data-testid="stChatInputSubmitButton"] { color: %(primary)s; }
+</style>
+"""
+
+
+def apply_theme() -> None:
+    """Inject the blue palette; config owns the colours."""
+    st.markdown(
+        THEME_CSS
+        % {
+            "primary": config.THEME_PRIMARY_COLOR,
+            "dark": config.THEME_PRIMARY_DARK_COLOR,
+        },
+        unsafe_allow_html=True,
+    )
+
+
+def render_header() -> None:
+    """App name, then the smaller tagline underneath."""
+    st.title(T.APP_NAME)
+    st.markdown(
+        f'<p class="spike-tagline">{T.TAGLINE}</p>', unsafe_allow_html=True
+    )
+
+
 def render_login(settings: Settings) -> None:
-    st.title(T.LOGIN_TITLE)
-    st.caption(T.LOGIN_SUBTITLE)
+    render_header()
 
     with st.form("login_form"):
         username = st.text_input(T.LOGIN_USERNAME_LABEL)
@@ -480,7 +540,7 @@ def render_chat(runtime: AppRuntime) -> None:
             logout()
             st.rerun()
 
-    st.title(T.CHAT_TITLE)
+    render_header()
     st.caption(T.INTRO)
 
     _render_history()
@@ -500,7 +560,7 @@ def _render_startup_failure(exc: BaseException) -> None:
     """Log the single whitelisted error line and show its code under our text."""
     failure = startup.describe_failure(exc)
     startup.log_failure(failure)
-    st.title(T.CHAT_TITLE)
+    render_header()
     st.error(T.with_error_code(T.TECHNICAL_ERROR, failure.code))
 
 
@@ -509,6 +569,7 @@ def main() -> None:
         page_title=config.APP_TITLE,
         layout=config.APP_LAYOUT,
     )
+    apply_theme()
     _init_state()
 
     if _SQLITE_FAILURE is not None:
@@ -521,7 +582,7 @@ def main() -> None:
     except SettingsError as exc:
         failure = startup.describe_failure(exc)
         startup.log_failure(failure)
-        st.title(T.LOGIN_TITLE)
+        render_header()
         st.error(T.with_error_code(T.LOGIN_CONFIG_ERROR, failure.code))
         return
 

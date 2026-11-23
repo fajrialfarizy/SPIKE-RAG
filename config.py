@@ -816,8 +816,12 @@ LEAK_OVERLAP_RATIO_THRESHOLD = 0.5
 # ---------------------------------------------------------------------------
 # Phase 3: Streamlit application, authentication and knowledge-base sync.
 
-APP_TITLE = "Lab Prestasi"
+APP_TITLE = "SPIKE RAG"
 APP_LAYOUT = "centered"
+
+# One blue palette for the whole UI (header, buttons, sidebar, accents).
+THEME_PRIMARY_COLOR = "#169090"
+THEME_PRIMARY_DARK_COLOR = "#0F6E6E"
 
 # Password hashing (OWASP Password Storage Cheat Sheet, checked 2026-11-20:
 # PBKDF2-HMAC-SHA256 with 600,000 iterations).
