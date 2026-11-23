@@ -1,191 +1,184 @@
 # Checklist Deploy Pertama — Lab Prestasi RAG
 
 Panduan langkah demi langkah untuk Supervisor. Semua langkah dilakukan lewat browser;
-tidak perlu menulis kode. Angka di bawah diukur di mesin pengembangan (Windows,
-model sudah terunduh), jadi angka di Streamlit Cloud akan berbeda.
+tidak perlu menulis kode.
+
+**Deploy pertama hanya butuh SATU akun layanan (service account): akun *app* yang
+read-only.** Artefak (zip + manifest) diunggah **manual** lewat Drive web. Akun
+*ingestion* yang bisa menulis baru dipakai setelah aplikasi terbukti jalan (bagian 10).
 
 | Metrik | Nilai (mesin pengembangan) | Status |
 | --- | --- | --- |
-| `import app` (Streamlit + chromadb + torch) | ± 4,5 detik | terukur |
-| `build_runtime` (Chroma + model e5 + warm-up) | ± 35 detik | terukur |
-| RSS setelah siap | ± 900 MB | terukur |
-| Embedding satu pertanyaan (setelah warm-up) | ± 50 ms | terukur |
+| `pip install -r requirements.txt` (venv baru, cache pip hangat) | lihat laporan Fix Pack 12 | terukur |
+| `import app` (Streamlit + chromadb + torch) | ± 2-5 detik | terukur |
+| `build_runtime` (Chroma + model e5 + warm-up) | ± 70-100 detik | terukur |
+| RSS setelah siap (`rss_mb`) | ± 920-970 MB | terukur |
 | Kecocokan pin Linux / Streamlit Cloud | — | **belum diverifikasi** |
 
-> **Penting:** ± 900 MB lebih besar dari batas bawah Streamlit Cloud (690 MB). Pilih
+> **Penting:** ± 920 MB lebih besar dari batas bawah Streamlit Cloud (690 MB). Pilih
 > mesin dengan RAM ≥ 1 GB. Bila hanya tersedia 690 MB, aplikasi akan kehabisan memori;
 > alternatifnya jalur ONNX untuk model yang sama, yang **belum diimplementasikan**
 > (rencananya ada di `docs/ONNX_PLAN.md`).
 
-> **Unduhan model (opsional):** `intfloat/multilingual-e5-small` diunduh sekali saat
-> runtime pertama. Set `HF_TOKEN` di Secrets agar unduhan memakai kuota akun Hugging
-> Face (menghindari peringatan unauthenticated dan laju unduhan yang dibatasi). Token
-> ini hanya untuk unduhan model, bukan untuk Groq, dan tidak pernah dicatat di log.
-
 ## 0. Ringkasan urutan
 
-1. Buat repo GitHub **private** (branch `main`).
-2. Buat dua service account Google (ingestion dan app) — lihat bagian 3.
-3. Jalankan ingestion di Colab, unggah artefak (zip dulu, manifest terakhir).
-4. Buat app di Streamlit Cloud, tempel Secrets, deploy.
-5. Verifikasi daftar di bagian 6.
+1. Repo GitHub **private**, branch **`phase3-app`**.
+2. Verifikasi dua berkas artefak di komputer ini (bagian 2).
+3. Buat **satu** service account app (read-only), catat e-mail-nya (bagian 3).
+4. Share folder Drive ke e-mail itu sebagai **Viewer**, lalu unggah dua berkas manual
+   (zip dulu, manifest terakhir) — bagian 4.
+5. Buat app di Streamlit Cloud dari branch `phase3-app`, Python **3.12**, tempel
+   Secrets (bagian 5-6), deploy.
+6. Verifikasi daftar di bagian 8, lalu kirim hasilnya ke saya (bagian 9).
 
-## 1. Repo privat
+## 1. Repo dan branch
 
-- Repo GitHub **private**, branch utama `main`.
+- Repo GitHub **private**.
+- Branch yang dipakai: **`phase3-app`** (bukan `main`). Pilih branch ini saat membuat
+  app di Streamlit Cloud.
 - `.gitignore` **wajib** mengecualikan: `.streamlit/secrets.toml`, `chroma_db/`,
   `data/artifacts/`, `data/kb_work/`, `data/dummy_pdfs/`, `logs/`, `pii_denylist.txt`.
 - Jangan pernah commit `secrets.toml`, kunci Groq, JSON service account, token Hugging
-  Face, atau korpus asli yang berisi data peserta. Repo private bukan alasan untuk
-  menyimpan kunci di git: riwayat git tetap menyimpannya selamanya.
-
-Yang **di-commit**: `app.py`, `app_texts.py`, `config.py`, `core/`, `ingestion/`,
-`scripts/`, `tests/`, `docs/`, `.streamlit/config.toml`,
-`.streamlit/secrets.toml.example`, `requirements.txt`, `requirements-ingest.txt`,
-`requirements-dev.txt`, `pytest.ini`, `README.md`.
+  Face, atau korpus asli yang berisi data peserta. Repo private bukan alasan menyimpan
+  kunci di git: riwayat git tetap menyimpannya selamanya.
 
 `chroma_db/` **tidak** di-commit: aplikasi membacanya dari artefak Drive. Tanpa
-`KB_SOURCE=drive` di Secrets, aplikasi akan mencari `chroma_db/` lokal dan gagal.
+`[kb] source = "drive"` di Secrets, aplikasi akan mencari `chroma_db/` lokal dan gagal.
 
-Paket yang dipasang Streamlit Cloud hanya `requirements.txt`. Paket ingestion
-(`pymupdf`, `reportlab`, `gspread`, `pillow`) ada di `requirements-ingest.txt` dan
-hanya dipakai di Colab; `pytest` dan `onnxruntime` ada di `requirements-dev.txt`.
-Sebuah tes (`tests/test_import_hygiene.py`) gagal bila modul aplikasi suatu saat
-mengimpor paket ingestion.
+## 2. Siapkan dan periksa artefak di komputer ini
 
-## 2. Streamlit Cloud → Secrets
+Dua berkas yang akan diunggah, di folder proyek:
 
-Buat app: **share.streamlit.io → New app → repo private → branch `main` →
-main file `app.py`**. Lalu buka **Settings → Secrets** dan tempel (nilai asli, bukan
-placeholder):
+```
+data/artifacts/chroma_backup.zip     <- artefak basis pengetahuan
+data/artifacts/manifest.json         <- ringkasan + checksum zip
+```
+
+Periksa keduanya **sebelum** diunggah:
+
+```bash
+python scripts/print_artifact_info.py
+```
+
+Skrip itu mencetak nama zip, ukurannya, SHA-256, serta ringkasan manifest (versi,
+model embedding, dimensi, jumlah laporan, jumlah chunk) dan memastikan checksum zip
+sama dengan yang tercatat di manifest. Skrip ini tidak memanggil Drive, tidak memakai
+model, dan tidak pernah mencetak kunci rahasia. Bila ada `problem:`, jangan unggah
+dulu; laporkan ke saya.
+
+## 3. Service account app (satu-satunya akun untuk deploy pertama)
+
+1. Buka Google Cloud Console → aktifkan **Google Drive API**.
+2. **IAM & Admin → Service Accounts → Create service account**.
+3. Buat key **JSON**, unduh sekali (file ini rahasia; jangan di-commit, jangan
+   dikirim lewat chat).
+4. Catat kolom **`client_email`** di file JSON itu, bentuknya seperti
+   `lab-prestasi-reader@nama-project.iam.gserviceaccount.com`.
+
+Akun ini **hanya membaca**. Jangan memberinya hak Editor.
+
+### Membaca Folder ID dari URL Drive
+
+Buka folder Drive di browser. URL-nya berbentuk:
+
+```
+https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz012345
+                                        \_______________________________/
+                                                ini Folder ID
+```
+
+Salin bagian setelah `/folders/` dan sebelum `?` (bila ada). Itulah
+`[kb] drive_folder_id`.
+
+### Share folder ke akun app
+
+Di folder Drive: **Share** → tempel `client_email` akun app → pilih **Viewer** →
+kirim. Tanpa langkah ini aplikasi akan gagal mengunduh artefak.
+
+## 4. Unggah artefak secara manual (zip dulu, manifest terakhir)
+
+Aturan yang tidak boleh dilanggar:
+
+- Folder harus berisi **tepat satu** `chroma_backup.zip` dan **tepat satu**
+  `manifest.json`. Aplikasi **menolak start** bila ada duplikat nama.
+- Unggah **`chroma_backup.zip` lebih dulu**, lalu **`manifest.json` terakhir**.
+  Urutan ini disengaja: bila manifest lama masih menunjuk zip lama, aplikasi menolak
+  ketidakcocokan checksum dan tetap menyajikan versi lama daripada menyajikan setengah
+  artefak.
+- Saat mengganti berkas, **timpa** file lama (Drive: *Manage versions* / *Replace*),
+  jangan membuat salinan dengan nama sama.
+
+## 5. Buat app di Streamlit Cloud
+
+1. **share.streamlit.io → Create app → Deploy a public/private app → GitHub**.
+2. Repo: repo privat di atas. **Branch: `phase3-app`**. Main file: `app.py`.
+3. **Advanced settings → Python version: 3.12.** (Pin di `requirements.txt` sudah
+   diverifikasi di Python 3.12; Python 3.14 belum diuji.)
+4. Lanjut ke Secrets (bagian 6) sebelum menekan Deploy, atau Deploy lalu simpan Secrets
+   dan **Reboot app**.
+
+Streamlit Cloud memasang `requirements.txt` saja. Paket ingestion (`pymupdf`,
+`reportlab`, `gspread`, `pillow`) ada di `requirements-ingest.txt` dan hanya dipakai di
+Colab; `pytest` dan `onnxruntime` ada di `requirements-dev.txt`.
+
+## 6. Streamlit Secrets — semua kunci
+
+**Manage app → Settings → Secrets.** Ganti setiap placeholder. Struktur ini sama
+dengan `.streamlit/secrets.toml.example`.
 
 ```toml
 [auth]
 username = "labprestasi"
-password_hash = "pbkdf2_sha256$600000$...$..."
+# Buat di komputer ini: python scripts/make_password_hash.py
+# Format: pbkdf2_sha256$<iterations>$<salt>$<digest>
+password_hash = "pbkdf2_sha256$600000$REPLACE_WITH_SALT$REPLACE_WITH_DIGEST"
 
 [groq]
-api_key = "gsk_..."
+api_key = "gsk_REPLACE_ME"
 
 [kb]
 source = "drive"
-drive_folder_id = "<id folder Drive>"
+local_dir = "chroma_db"
+manifest_path = "data/artifacts/manifest.json"
+drive_folder_id = "REPLACE_WITH_FOLDER_ID_DARI_URL"
 drive_manifest_name = "manifest.json"
 drive_artifact_name = "chroma_backup.zip"
 work_dir = "data/kb_work"
 manifest_ttl_seconds = 300
-# Opsional: id file persis. Bila diisi, aplikasi mengunduh file itu langsung dan
-# tidak mencari berdasarkan nama. Kosongkan bila tidak yakin.
-# manifest_file_id = "..."
-# artifact_file_id = "..."
+# Opsional: id file persis. Isi hanya bila mencari berdasarkan nama bermasalah.
+# manifest_file_id = "REPLACE_ME"
+# artifact_file_id = "REPLACE_ME"
 
 [gcp_service_account]
 type = "service_account"
-project_id = "..."
-private_key_id = "..."
-private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-client_email = "..."
-client_id = "..."
+project_id = "REPLACE_WITH_PROJECT_ID"
+private_key_id = "REPLACE_WITH_KEY_ID"
+private_key = "-----BEGIN PRIVATE KEY-----\nREPLACE_WITH_KEY\n-----END PRIVATE KEY-----\n"
+client_email = "lab-prestasi-reader@REPLACE_WITH_PROJECT_ID.iam.gserviceaccount.com"
+client_id = "REPLACE_WITH_CLIENT_ID"
 auth_uri = "https://accounts.google.com/o/oauth2/auth"
 token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/REPLACE_WITH_SA_EMAIL"
 ```
 
-`[gcp_service_account]` di Secrets adalah service account **app** (read-only),
-bukan service account ingestion.
+- `[gcp_service_account]` = akun **app** (read-only). Isi dari file JSON langkah 3;
+  `private_key` tetap memakai `\n` sebagai pemisah baris.
+- `private_key` dan `api_key` tidak pernah dicetak aplikasi; jangan menempelkannya di
+  chat, tiket, atau screenshot.
+- **HF_TOKEN (opsional, tidak dipakai aplikasi).** Streamlit Secrets bukan variabel
+  lingkungan, jadi `HF_TOKEN` di Secrets tidak berpengaruh. Model
+  `intfloat/multilingual-e5-small` bersifat publik dan diunduh tanpa token (hanya
+  muncul peringatan rate-limit). Bila host Anda mendukung variabel lingkungan, set
+  `HF_TOKEN` di sana. Token ini bukan kunci Groq dan tidak pernah dicatat di log.
 
-Membuat `password_hash`: di komputer Anda jalankan
-`python scripts/make_password_hash.py`, masukkan password lewat prompt (tidak tampil
-di layar), lalu salin hasilnya. Password mentah tidak pernah disimpan.
+Membuat `password_hash`: di komputer ini jalankan
+`python scripts/make_password_hash.py`, masukkan password lewat prompt (tidak tampil di
+layar), salin hasilnya. Password mentah tidak pernah disimpan.
 
-## 3. Dua service account (model yang benar)
+## 7. Log dan memori
 
-Kedua akun memakai folder Drive yang sama, tetapi haknya berbeda:
-
-| | Akun **ingestion** | Akun **app** |
-| --- | --- | --- |
-| Dipakai di | Colab (`scripts/run_ingestion.py`) | Streamlit Secrets |
-| Akses folder | Editor (harus menulis artefak) | Viewer (hanya membaca) |
-| Scope OAuth | `spreadsheets`, `drive.file`, `drive.readonly` | `drive.readonly` saja |
-| Alasan | Menulis `rag_status` di Sheets dan mengunggah/mengganti `chroma_backup.zip` + `manifest.json` | Aplikasi tidak pernah menulis; bila kuncinya bocor, penyerang tidak bisa mengubah basis pengetahuan |
-| Kredensial | `GCP_SERVICE_ACCOUNT_JSON`, `SHEET_ID`, `DRIVE_FOLDER_ID` di Colab Secrets | `[gcp_service_account]` di Streamlit Secrets |
-
-Langkah membuat akun **ingestion**:
-
-1. Google Cloud Console → aktifkan **Google Drive API** dan **Google Sheets API**.
-2. Buat service account, buat key JSON, unduh sekali.
-3. Share folder Drive ke `client_email` akun ingestion sebagai **Editor**.
-4. Share spreadsheet ke `client_email` yang sama sebagai **Editor** (agar
-   `rag_status` bisa diperbarui).
-
-Langkah membuat akun **app**:
-
-1. Service account kedua di project yang sama (atau project lain).
-2. **Tidak** perlu akses Sheets. Cukup Drive API aktif.
-3. Share folder Drive yang sama ke `client_email` akun app sebagai **Viewer**.
-4. Salin seluruh isi key JSON-nya ke `[gcp_service_account]`.
-
-Jangan memberi akun app hak Editor: satu-satunya tulis ke Drive dilakukan ingestion.
-
-## 4. Unggah artefak pertama
-
-Di Colab (bukan di Streamlit Cloud):
-
-```bash
-pip install -r requirements-ingest.txt
-python scripts/run_ingestion.py --source google
-```
-
-`run_ingestion.py` membuat `chroma_backup.zip` dan `manifest.json`, lalu mengunggah
-**zip lebih dulu, manifest terakhir**. Urutan ini disengaja: bila unggahan manifest
-gagal, manifest lama masih menunjuk checksum zip lama, sehingga aplikasi menolak
-ketidakcocokan dan tetap menyajikan versi lama daripada menyajikan setengah artefak.
-
-Bila mengunggah manual ke Drive:
-
-1. Hapus/rencanakan penggantian; folder harus berisi **tepat satu** `chroma_backup.zip`
-   dan **tepat satu** `manifest.json`.
-2. Unggah `chroma_backup.zip` lebih dulu (timpa file lama, jangan buat salinan baru).
-3. Unggah `manifest.json` terakhir (timpa file lama).
-4. Bila ada dua file dengan nama sama, aplikasi **menolak** startup dengan pesan jelas;
-   rapikan dulu folder Drive.
-
-## 5. Deploy
-
-Tekan **Deploy**. Streamlit Cloud memasang `requirements.txt` saja, lalu menjalankan
-`app.py`. Login belum bisa dipakai sampai Secrets tersimpan dan app di-reboot.
-
-## 6. Setelah deploy: yang harus diverifikasi
-
-1. **Login salah** → pesan galat generik, tidak ada detail; 5 kali salah → akun
-   terkunci 5 menit untuk semua orang (akun bersama).
-2. **Login benar** → layar chat muncul, tiga tombol contoh tersedia.
-3. **Tiga pertanyaan**:
-   - satu spesifik (kendala/tema): jawaban masuk akal, **blok Sumber hanya berisi
-     laporan yang dikutip**, baris cakupan (bila ada) menyebut angka yang sama dengan
-     jumlah baris di Sumber;
-   - satu perbandingan (juara vs belum juara): ada dua judul kelompok, setiap poin
-     berakhir dengan sitasi, dan tidak ada kode `LAP...` yang bocor ke jawaban;
-   - satu di luar cakupan: teks penolakan standar, bukan jawaban karangan.
-4. **Kuota sesi**: kirim pertanyaan kedua langsung setelah yang pertama → pesan
-   "tunggu"; setelah 10 pertanyaan dalam satu jam → pesan batas jam; setelah 15
-   pertanyaan dalam sehari → pesan batas harian. Ini penghitung **per sesi browser**,
-   jadi beberapa tab/pengguna bisa melewatinya; lihat catatan risiko.
-   **Catatan:** penghitung kuota sesi dan limiter token Groq disimpan **di memori
-   proses**. Restart atau sleep Streamlit Cloud mereset keduanya, sehingga batas
-   harian tidak bertahan setelah aplikasi tidur; kendali nyata tetap kuota akun Groq.
-5. **Pesan antrean**: bila layanan Groq sedang lambat (lebih dari 3 detik menunggu),
-   status pemrosesan menampilkan "Sedang mengantre karena batas layanan, perkiraan
-   tunggu ~N detik."
-6. **Refresh knowledge base**: setelah ingestion ulang dan unggah artefak baru, tunggu
-   ± 5 menit (TTL manifest) lalu tanyakan isi laporan baru. Bila gagal, aplikasi tetap
-   menyajikan versi lama dan menulis `kb_refresh_failed` di log.
-7. **Lockout**: pastikan pesan terkunci muncul setelah 5 percobaan salah.
-
-## 7. Membaca log dan memori
-
-Streamlit Cloud → **Manage app → Logs**.
-
-Satu baris startup (cari `app_startup`):
+**Manage app → Logs.** Cari satu baris startup:
 
 ```
 app_startup embedding_runtime=sentence-transformers embedding_model=intfloat/multilingual-e5-small
@@ -193,22 +186,63 @@ kb_version=... kb_source=drive chunks=... kb_load_seconds=... embedder_load_seco
 embedder_warmup_ms=... total_load_seconds=... rss_mb=...
 ```
 
-- `rss_mb` adalah memori proses saat siap. Bandingkan dengan kuota mesin.
-- `kb_load_seconds` dan `embedder_load_seconds` memisahkan lambatnya Drive/Chroma dari
-  lambatnya model.
-- Baris lain: `first_query latency_ms=... rss_mb=...` (pertanyaan pertama),
-  `app_turn status=... latency_ms=...` (setiap jawaban), `kb_switched version=...`
-  (artefak baru dipakai), `kb_refresh_failed error_type=...` (artefak baru ditolak).
+- `rss_mb` = memori proses saat siap; bandingkan dengan kuota mesin (bagian 0).
+- `kb_load_seconds` (Drive + Chroma) dan `embedder_load_seconds` (model) memisahkan
+  penyebab lambat.
+- `Manage app → Metrics` (bila tersedia) menampilkan pemakaian memori/CPU berjalan.
+- Baris lain: `first_query ... rss_mb=...`, `app_turn status=... latency_ms=...`,
+  `kb_switched version=...`, `kb_refresh_failed error_type=...`.
 - Log **tidak pernah** memuat teks pertanyaan, jawaban, dokumen, atau kunci.
 
-## 8. Bila terjadi masalah
+## 8. Setelah deploy: yang harus diverifikasi
+
+1. **Login salah** → pesan galat generik tanpa detail; **5 kali salah** → akun
+   terkunci 5 menit untuk semua orang (akun bersama). Pastikan pesan terkunci muncul.
+2. **Login benar** → layar chat muncul.
+3. **Hanya 2-3 pertanyaan** (hemat kuota Groq 200.000 token/hari):
+   - satu spesifik (kendala/tema): jawaban masuk akal, **blok Sumber hanya berisi
+     laporan yang dikutip**;
+   - satu perbandingan (juara vs belum juara): dua judul kelompok, setiap poin
+     berakhir dengan sitasi, tidak ada kode `LAP...` yang bocor, dan **tidak ada**
+     bagian "Perbedaan utama" (bagian itu dimatikan di Fix Pack 12);
+   - satu di luar cakupan: teks penolakan standar, bukan jawaban karangan.
+4. **Pesan antrean**: bila layanan Groq lambat (> 3 detik menunggu), status
+   menampilkan "Sedang mengantre karena batas layanan, perkiraan tunggu ~N detik."
+5. **Refresh knowledge base**: unggah ulang zip lalu manifest (urutan sama), tunggu
+   ± 5 menit (TTL manifest), lalu tanyakan isi laporan baru. Bila gagal, aplikasi tetap
+   menyajikan versi lama dan menulis `kb_refresh_failed` di log.
+
+## 9. Yang dikirim balik ke saya
+
+1. Baris **`app_startup`** lengkap dari Logs (terutama `rss_mb`,
+   `total_load_seconds`, `chunks`).
+2. **Waktu instalasi** yang ditampilkan Streamlit Cloud saat build selesai, bila ada.
+3. **Teks galat apa pun** yang muncul (Logs atau layar), apa adanya — jangan
+   meringkas pesan galat.
+
+## 10. Langkah berikutnya (setelah deploy pertama terbukti jalan)
+
+Akun **ingestion** (boleh menulis) baru dibuat kemudian, untuk menjalankan
+`scripts/run_ingestion.py` dari Colab agar artefak terunggah otomatis dan `rag_status`
+di Sheets ikut diperbarui. Saat itu:
+
+1. Service account kedua; aktifkan Drive API **dan** Sheets API.
+2. Share folder Drive sebagai **Editor** (perlu menulis artefak) dan spreadsheet
+   sebagai **Editor** (perlu `rag_status`).
+3. Simpan kredensialnya di **Colab Secrets**: `GCP_SERVICE_ACCOUNT_JSON`, `SHEET_ID`,
+   `DRIVE_FOLDER_ID`.
+
+Jangan memberi akun app hak Editor: satu-satunya penulis artefak adalah ingestion.
+
+## 11. Bila terjadi masalah
 
 | Gejala | Kemungkinan penyebab | Tindakan |
 | --- | --- | --- |
 | Layar "konfigurasi belum lengkap" | Secrets kurang satu seksi | Periksa `[auth]`, `[groq]`, `[kb]` |
-| Layar galat teknis saat login berhasil | Manifest/zip tidak valid, nama file ganda, atau SQLite < 3.35 | Cek log: `kb_*`, `DriveArtifactError`, `SQLiteVersionError` |
-| `app_startup` tidak muncul | Proses mati saat memuat (kemungkinan memori) | Cek kuota RAM; pertimbangkan mesin lebih besar |
+| `app_startup` tidak muncul | Proses mati saat memuat (kemungkinan memori) | Cek `rss_mb`/kuota; pilih mesin lebih besar |
+| Galat `DriveArtifactError` saat login | Folder belum di-share ke akun app, Folder ID salah, atau ada duplikat nama | Bagian 3-4 |
+| `kb_refresh_failed` setelah unggah ulang | Zip dan manifest tidak sepasang (checksum beda) | Unggah zip dulu, manifest terakhir |
 | Jawaban "terlalu banyak permintaan" | Batas token per menit Groq | Tunggu beberapa menit |
-| Jawaban "kuota harian layanan sedang habis" | Batas token harian Groq (200.000/hari) | Tunggu sampai jendela harian direset besok; jangan menaikkan limit di kode |
+| Jawaban "kuota harian layanan sedang habis" | Batas 200.000 token/hari | Tunggu reset harian; jangan menaikkan limit di kode |
 | Semua pengguna terkunci | 5 login salah | Tunggu 5 menit |
-| Jawaban perbandingan bilang "terjadi kendala teknis" | Model mengembalikan JSON tidak valid/terpotong | Catat waktu, lihat `invalid_structured_output` di log; tidak ada retry otomatis karena kuota |
+| Perbandingan bilang "terjadi kendala teknis" | Model mengembalikan JSON tidak valid/terpotong | Catat waktu, lihat `invalid_structured_output` di log |
