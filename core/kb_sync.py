@@ -34,18 +34,46 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional
 
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
 import config
+from core import startup
 from core.knowledge_base import KnowledgeBase, KnowledgeBaseError
 from core.settings import KBSettings
-from ingestion.sync import ChromaSync, ManifestError
+from ingestion.sync import (
+    ChromaSync,
+    ManifestError,
+    ManifestModelMismatchError,
+)
 
 logger = logging.getLogger("core_kb_sync")
 
 
 class KBSyncError(RuntimeError):
-    """Raised when no validated knowledge base can be served."""
+    """
+    Raised when no validated knowledge base can be served.
+
+    Fix pack 13a: ``code`` is one short whitelisted cause that the app shows under
+    its generic message, and ``http_status``/``reason`` come from a Drive response.
+    Neither carries an id, a name or a value.
+    """
+
+    code: Optional[str] = None
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Optional[str] = None,
+        http_status: Optional[int] = None,
+        reason: Optional[str] = None,
+    ):
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+        self.http_status = http_status
+        self.reason = reason
 
 
 class KBIntegrityError(KBSyncError):
@@ -54,6 +82,30 @@ class KBIntegrityError(KBSyncError):
 
 class KBZipSafetyError(KBSyncError):
     """Raised when an archive tries to escape the extraction directory."""
+
+    code = "KB/extract_failed"
+
+
+class KBDriveError(KBSyncError):
+    """Raised when a Drive call fails; the code comes from the HTTP response."""
+
+
+def _is_google_error(exc: BaseException) -> bool:
+    return isinstance(exc, HttpError) or str(type(exc).__module__ or "").startswith(
+        "google"
+    )
+
+
+def _drive_failure(exc: BaseException) -> KBDriveError:
+    """Wrap a Google client failure, keeping only status and reason code."""
+    status, reason = startup.google_error_details(exc)
+    code = startup.google_drive_code(status, reason) or "KB/drive_forbidden"
+    return KBDriveError(
+        "The Drive request failed.",
+        code=code,
+        http_status=status,
+        reason=reason,
+    )
 
 
 @dataclass(frozen=True)
@@ -99,7 +151,10 @@ def safe_extract_zip(zip_path: Path, destination: Path) -> None:
     try:
         archive = zipfile.ZipFile(zip_path, "r")
     except zipfile.BadZipFile as exc:
-        raise KBIntegrityError("The knowledge-base artifact is not a valid zip.") from exc
+        raise KBIntegrityError(
+            "The knowledge-base artifact is not a valid zip.",
+            code="KB/extract_failed",
+        ) from exc
 
     with archive:
         members = archive.infolist()
@@ -140,12 +195,29 @@ def _load_manifest_file(path: Path) -> Dict[str, Any]:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        raise KBSyncError(f"Manifest '{path}' does not exist.") from exc
+        raise KBSyncError(
+            f"Manifest '{path}' does not exist.", code="KB/missing_artifact"
+        ) from exc
     except (OSError, ValueError) as exc:
-        raise KBSyncError(f"Manifest '{path}' is not readable JSON.") from exc
+        raise KBSyncError(
+            f"Manifest '{path}' is not readable JSON.", code="KB/manifest_mismatch"
+        ) from exc
     if not isinstance(payload, dict):
-        raise KBSyncError(f"Manifest '{path}' is not a JSON object.")
+        raise KBSyncError(
+            f"Manifest '{path}' is not a JSON object.", code="KB/manifest_mismatch"
+        )
     return payload
+
+
+def _validate_manifest(manifest: Mapping[str, Any]) -> None:
+    """Validate the manifest and keep the two causes distinguishable."""
+    with startup.stage(startup.STAGE_MANIFEST_VALIDATE):
+        try:
+            ChromaSync.validate_manifest(dict(manifest), config.EMBEDDING_MODEL_NAME)
+        except ManifestModelMismatchError as exc:
+            raise KBIntegrityError(str(exc), code="KB/model_mismatch") from exc
+        except ManifestError as exc:
+            raise KBIntegrityError(str(exc), code="KB/manifest_mismatch") from exc
 
 
 class LocalKBSource:
@@ -167,11 +239,13 @@ class LocalKBSource:
         )
 
     def fetch_manifest(self) -> Dict[str, Any]:
-        if not self.local_dir.exists():
-            raise KBSyncError(
-                f"Local knowledge base directory '{self.local_dir}' does not exist."
-            )
-        return _load_manifest_file(self.manifest_path)
+        with startup.stage(startup.STAGE_MANIFEST_FETCH):
+            if not self.local_dir.exists():
+                raise KBSyncError(
+                    f"Local knowledge base directory '{self.local_dir}' does not exist.",
+                    code="KB/missing_artifact",
+                )
+            return _load_manifest_file(self.manifest_path)
 
     def download_artifact(self, manifest: Mapping[str, Any], destination: Path) -> None:
         raise KBSyncError("The local source has no artifact to download.")
@@ -213,51 +287,74 @@ class DriveKBSource:
                 "google-api-python-client is not installed, so Drive cannot be read."
             ) from exc
 
-        credentials = service_account.Credentials.from_service_account_info(
-            self._service_account_info, scopes=config.KB_DRIVE_SCOPES
-        )
-        self._service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+        with startup.stage(startup.STAGE_DRIVE_AUTH):
+            try:
+                credentials = service_account.Credentials.from_service_account_info(
+                    self._service_account_info, scopes=config.KB_DRIVE_SCOPES
+                )
+                self._service = build(
+                    "drive", "v3", credentials=credentials, cache_discovery=False
+                )
+            except Exception as exc:
+                if _is_google_error(exc):
+                    raise _drive_failure(exc) from exc
+                raise
         return self._service
 
     def _find_file_id(self, name: str) -> str:
         query = (
             f"name = '{name}' and '{self.folder_id}' in parents and trashed = false"
         )
-        response = (
-            self._get_service()
-            .files()
-            .list(
-                q=query,
-                spaces="drive",
-                fields="files(id, name, modifiedTime, size)",
-                pageSize=10,
+        try:
+            response = (
+                self._get_service()
+                .files()
+                .list(
+                    q=query,
+                    spaces="drive",
+                    fields="files(id, name, modifiedTime, size)",
+                    pageSize=10,
+                )
+                .execute()
             )
-            .execute()
-        )
+        except Exception as exc:
+            if _is_google_error(exc):
+                raise _drive_failure(exc) from exc
+            raise
         files = response.get("files") or []
         if not files:
-            raise KBSyncError(f"'{name}' was not found in the knowledge-base folder.")
+            raise KBSyncError(
+                f"'{name}' was not found in the knowledge-base folder.",
+                code="KB/missing_artifact",
+            )
         if len(files) > 1:
             raise KBSyncError(
-                f"'{name}' appears {len(files)} times in the knowledge-base folder."
+                f"'{name}' appears {len(files)} times in the knowledge-base folder.",
+                code="KB/duplicate_artifact",
             )
         return files[0]["id"]
 
     def _download_to_file(self, file_id: str, destination: Path) -> None:
         request = self._get_service().files().get_media(fileId=file_id)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with open(destination, "wb") as handle:
-            downloader = MediaIoBaseDownload(handle, request, chunksize=1024 * 1024)
-            done = False
-            while not done:
-                _, done = downloader.next_chunk()
+        try:
+            with open(destination, "wb") as handle:
+                downloader = MediaIoBaseDownload(handle, request, chunksize=1024 * 1024)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+        except Exception as exc:
+            if _is_google_error(exc):
+                raise _drive_failure(exc) from exc
+            raise
 
     def fetch_manifest(self) -> Dict[str, Any]:
-        file_id = self.manifest_file_id or self._find_file_id(self.manifest_name)
-        with tempfile.TemporaryDirectory(prefix="kb_manifest_") as tmp:
-            path = Path(tmp) / self.manifest_name
-            self._download_to_file(file_id, path)
-            return _load_manifest_file(path)
+        with startup.stage(startup.STAGE_MANIFEST_FETCH):
+            file_id = self.manifest_file_id or self._find_file_id(self.manifest_name)
+            with tempfile.TemporaryDirectory(prefix="kb_manifest_") as tmp:
+                path = Path(tmp) / self.manifest_name
+                self._download_to_file(file_id, path)
+                return _load_manifest_file(path)
 
     def download_artifact(self, manifest: Mapping[str, Any], destination: Path) -> None:
         name = str(manifest.get("zip_filename") or config.KB_DRIVE_ARTIFACT_NAME)
@@ -339,10 +436,7 @@ class KBSynchronizer:
 
     def _validate_local(self, manifest: Mapping[str, Any]) -> KBVersion:
         manifest_path = self.source.manifest_path
-        try:
-            ChromaSync.validate_manifest(dict(manifest), config.EMBEDDING_MODEL_NAME)
-        except ManifestError as exc:
-            raise KBIntegrityError(str(exc)) from exc
+        _validate_manifest(manifest)
 
         loaded = self._loader(
             persist_dir=self.settings.local_dir,
@@ -380,14 +474,13 @@ class KBSynchronizer:
         self, manifest: Mapping[str, Any], previous: Optional[KBVersion]
     ) -> KBVersion:
         manifest = dict(manifest)
-        try:
-            ChromaSync.validate_manifest(manifest, config.EMBEDDING_MODEL_NAME)
-        except ManifestError as exc:
-            raise KBIntegrityError(str(exc)) from exc
+        _validate_manifest(manifest)
 
         checksum = str(manifest.get("zip_checksum") or "")
         if not checksum:
-            raise KBIntegrityError("The manifest has no zip_checksum.")
+            raise KBIntegrityError(
+                "The manifest has no zip_checksum.", code="KB/manifest_mismatch"
+            )
 
         work_dir = Path(self.settings.work_dir)
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -397,26 +490,33 @@ class KBSynchronizer:
         staging = Path(tempfile.mkdtemp(prefix="kb_staging_", dir=str(work_dir)))
         try:
             artifact = staging / "artifact.zip"
-            self.source.download_artifact(manifest, artifact)
+            # Any source: the download is its own stage, so a hang or a Drive
+            # error names the step that was running.
+            with startup.stage(startup.STAGE_ZIP_DOWNLOAD):
+                self.source.download_artifact(manifest, artifact)
 
-            actual = sha256_file(artifact)
-            if actual != checksum:
-                raise KBIntegrityError(
-                    "The downloaded artifact does not match the manifest checksum."
+            with startup.stage(startup.STAGE_CHECKSUM):
+                actual = sha256_file(artifact)
+                if actual != checksum:
+                    raise KBIntegrityError(
+                        "The downloaded artifact does not match the manifest "
+                        "checksum.",
+                        code="KB/checksum_mismatch",
+                    )
+
+            with startup.stage(startup.STAGE_EXTRACT):
+                extracted = staging / "extracted"
+                safe_extract_zip(artifact, extracted)
+
+                target = versions_dir / (
+                    f"{config.KB_VERSION_DIR_PREFIX}{uuid.uuid4().hex[:12]}"
                 )
+                shutil.move(str(extracted), str(target))
 
-            extracted = staging / "extracted"
-            safe_extract_zip(artifact, extracted)
-
-            target = versions_dir / (
-                f"{config.KB_VERSION_DIR_PREFIX}{uuid.uuid4().hex[:12]}"
-            )
-            shutil.move(str(extracted), str(target))
-
-            manifest_copy = target / "downloaded_manifest.json"
-            manifest_copy.write_text(
-                json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
+                manifest_copy = target / "downloaded_manifest.json"
+                manifest_copy.write_text(
+                    json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
 
             loaded = self._loader(persist_dir=target, manifest_path=manifest_copy)
             self._check_counts(loaded, manifest)
@@ -439,23 +539,29 @@ class KBSynchronizer:
 
     @staticmethod
     def _check_counts(loaded: Any, manifest: Mapping[str, Any]) -> None:
-        expected_chunks = manifest.get("chunk_count")
-        if expected_chunks is not None:
-            actual = int(loaded.count_chunks())
-            if int(expected_chunks) != actual:
-                raise KBIntegrityError(
-                    f"Manifest records {expected_chunks} chunks but the collection "
-                    f"holds {actual}."
-                )
+        with startup.stage(startup.STAGE_MANIFEST_VALIDATE):
+            expected_chunks = manifest.get("chunk_count")
+            if expected_chunks is not None:
+                actual = int(loaded.count_chunks())
+                if int(expected_chunks) != actual:
+                    raise KBIntegrityError(
+                        f"Manifest records {expected_chunks} chunks but the collection "
+                        f"holds {actual}.",
+                        code="KB/manifest_mismatch",
+                    )
 
-        expected_reports = manifest.get("report_count")
-        if expected_reports is not None:
-            actual_reports = len(loaded.report_ids())
-            if abs(int(expected_reports) - actual_reports) > config.KB_REPORT_COUNT_TOLERANCE:
-                raise KBIntegrityError(
-                    f"Manifest records {expected_reports} reports but the collection "
-                    f"holds {actual_reports}."
-                )
+            expected_reports = manifest.get("report_count")
+            if expected_reports is not None:
+                actual_reports = len(loaded.report_ids())
+                if (
+                    abs(int(expected_reports) - actual_reports)
+                    > config.KB_REPORT_COUNT_TOLERANCE
+                ):
+                    raise KBIntegrityError(
+                        f"Manifest records {expected_reports} reports but the "
+                        f"collection holds {actual_reports}.",
+                        code="KB/manifest_mismatch",
+                    )
 
     @staticmethod
     def _remove_old_versions(versions_dir: Path, keep: Path) -> None:

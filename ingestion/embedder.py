@@ -9,15 +9,55 @@ configured model cannot be loaded, embedding fails loudly. Offline tests inject
 an explicit double from tests/stubs.py instead of relying on a silent fallback.
 """
 
+import os
 import threading
 import time
 from typing import Any, List, Optional, Sequence
 
 import config
+from core import startup
 
 
 class EmbeddingError(RuntimeError):
     """Raised when the configured embedding model cannot be used."""
+
+    # Fix pack 13a: the code the app shows under its generic message.
+    code = "EMB/load_failed"
+
+
+class EmbeddingDownloadError(EmbeddingError):
+    """Raised when the model weights cannot be fetched from Hugging Face."""
+
+    code = "EMB/download_failed"
+
+
+# Exception types huggingface_hub/transformers use for a network or cache failure.
+# A download is told apart from a load failure by where the exception came from,
+# never by reading the message (which can carry a URL).
+_DOWNLOAD_ERROR_MODULES = (
+    "huggingface_hub",
+    "requests",
+    "urllib3",
+    "http",
+    "socket",
+    "aiohttp",
+    "ssl",
+)
+
+
+def is_download_error(exc: BaseException) -> bool:
+    """True when the failure came from the network/cache layer."""
+    current: Optional[BaseException] = exc
+    for _ in range(5):
+        if current is None:
+            return False
+        module = str(type(current).__module__ or "")
+        if module.split(".")[0] in _DOWNLOAD_ERROR_MODULES:
+            return True
+        if isinstance(current, (ConnectionError, TimeoutError)):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class E5Embedder:
@@ -42,6 +82,13 @@ class E5Embedder:
         if self._model is not None:
             return
 
+        # Fix pack 13a: a download that happens inside a Streamlit script run must
+        # fail instead of hanging forever. huggingface_hub reads this timeout from
+        # the environment, so it is set before sentence-transformers imports it.
+        os.environ.setdefault(
+            "HF_HUB_DOWNLOAD_TIMEOUT", str(config.EMBEDDER_DOWNLOAD_TIMEOUT_SECONDS)
+        )
+
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:  # pragma: no cover - environment dependent
@@ -51,15 +98,25 @@ class E5Embedder:
             ) from exc
 
         started = time.perf_counter()
-        try:
-            self._model = SentenceTransformer(self.model_name)
-            self.load_seconds = round(time.perf_counter() - started, 2)
-        except Exception as exc:  # pragma: no cover - environment dependent
-            raise EmbeddingError(
-                f"Could not load the configured embedding model '{self.model_name}'. "
-                "Ingestion refuses to substitute another model or a pseudo-embedding. "
-                "Fix the model availability or inject an explicit test double."
-            ) from exc
+        # Fix pack 13a: this stage is the only place that may download weights. The
+        # wrapping happens INSIDE it, so the stage that fails is this one.
+        with startup.stage(startup.STAGE_EMBEDDER_LOAD):
+            try:
+                self._model = SentenceTransformer(self.model_name)
+            except Exception as exc:  # pragma: no cover - environment dependent
+                if is_download_error(exc):
+                    raise EmbeddingDownloadError(
+                        f"Could not download the configured embedding model "
+                        f"'{self.model_name}' within "
+                        f"{config.EMBEDDER_DOWNLOAD_TIMEOUT_SECONDS} s."
+                    ) from exc
+                raise EmbeddingError(
+                    f"Could not load the configured embedding model "
+                    f"'{self.model_name}'. Ingestion refuses to substitute another "
+                    "model or a pseudo-embedding. Fix the model availability or "
+                    "inject an explicit test double."
+                ) from exc
+        self.load_seconds = round(time.perf_counter() - started, 2)
 
     def _check_model_dimension(self):
         # sentence-transformers 6.x renames the accessor; support both spellings.

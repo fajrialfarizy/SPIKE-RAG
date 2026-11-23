@@ -25,20 +25,34 @@ import streamlit as st
 
 import app_texts as T
 import config
+from core import startup
 from core.sqlite_compat import SQLiteVersionError, ensure_sqlite_version
 
-# Must happen before chromadb is imported (it needs SQLite >= 3.35).
-SQLITE_VERSION = ensure_sqlite_version()
+# Fix pack 13a: one INFO handler on stdout, so the stage lines and the single
+# error line reach the cloud log, which keeps stdout.
+startup.configure_logging()
 
-from core.auth import AuthConfigurationError, AuthManager
-from core.kb_sync import DriveKBSource, KBSynchronizer, KBSyncError, KBVersion
-from core.llm_client import GroqLLMClient
-from core.pipeline import AnswerStatus, RagPipeline, configure_file_logging
-from core.rate_limiter import TokenAwareRateLimiter, get_token_limiter
-from core.settings import Settings, SettingsError, load_settings
-from core.tokens import E5TokenCounter
-from core.warmup import WarmupError, warm_up_embedder, warm_up_knowledge_base
-from ingestion.embedder import E5Embedder
+# Must happen before chromadb is imported (it needs SQLite >= 3.35).
+_SQLITE_FAILURE: Optional[BaseException] = None
+SQLITE_VERSION: Optional[str] = None
+try:
+    with startup.stage(startup.STAGE_SQLITE):
+        SQLITE_VERSION = ensure_sqlite_version()
+except SQLiteVersionError as exc:
+    # chromadb needs that SQLite too, so importing the core modules below would
+    # abort this script before any screen exists. The failure is kept for main().
+    _SQLITE_FAILURE = exc
+
+if _SQLITE_FAILURE is None:
+    from core.auth import AuthConfigurationError, AuthManager
+    from core.kb_sync import DriveKBSource, KBSynchronizer, KBSyncError, KBVersion
+    from core.llm_client import GroqLLMClient
+    from core.pipeline import AnswerStatus, RagPipeline, configure_file_logging
+    from core.rate_limiter import TokenAwareRateLimiter, get_token_limiter
+    from core.settings import Settings, SettingsError, load_settings
+    from core.tokens import E5TokenCounter
+    from core.warmup import WarmupError, warm_up_embedder, warm_up_knowledge_base
+    from ingestion.embedder import E5Embedder
 
 logger = logging.getLogger("app")
 
@@ -119,36 +133,46 @@ class AppRuntime:
 def build_runtime(settings: Settings) -> AppRuntime:
     """Load the knowledge base, the embedder and the LLM client (post-login)."""
     started = time.perf_counter()
-    configure_file_logging(config.LOG_DIR)
-    configure_app_logging(config.LOG_DIR)
 
-    source = None
-    if settings.kb.source == config.KB_SOURCE_DRIVE:
-        source = DriveKBSource(
-            folder_id=settings.kb.drive_folder_id or "",
-            service_account_info=settings.gcp_service_account,
-            manifest_name=settings.kb.drive_manifest_name,
-            manifest_file_id=settings.kb.drive_manifest_file_id,
-            artifact_file_id=settings.kb.drive_artifact_file_id,
-        )
+    # Fix pack 13a: every step is bracketed so the cloud log shows stage_start and
+    # stage_done (with seconds and RSS), and a killed process still names the step
+    # it died in.
+    with startup.stage(startup.STAGE_RUNTIME_INIT):
+        configure_file_logging(config.LOG_DIR)
+        configure_app_logging(config.LOG_DIR)
+        startup.log_environment_once()
 
-    synchronizer = KBSynchronizer(settings.kb, source=source)
+    with startup.stage(startup.STAGE_KB_INIT):
+        source = None
+        if settings.kb.source == config.KB_SOURCE_DRIVE:
+            source = DriveKBSource(
+                folder_id=settings.kb.drive_folder_id or "",
+                service_account_info=settings.gcp_service_account,
+                manifest_name=settings.kb.drive_manifest_name,
+                manifest_file_id=settings.kb.drive_manifest_file_id,
+                artifact_file_id=settings.kb.drive_artifact_file_id,
+            )
+        synchronizer = KBSynchronizer(settings.kb, source=source)
+
     kb_started = time.perf_counter()
-    version = synchronizer.current()
+    with startup.stage(startup.STAGE_KB_LOAD):
+        version = synchronizer.current()
+        if version.handle is None:
+            raise KBSyncError("The knowledge base was not validated by its loader.")
     kb_load_seconds = round(time.perf_counter() - kb_started, 2)
-    if version.handle is None:
-        raise KBSyncError("The knowledge base was not validated by its loader.")
 
     embedder = E5Embedder()
-    warmup_ms = warm_up_embedder(embedder)
+    with startup.stage(startup.STAGE_EMBEDDER_WARMUP):
+        warmup_ms = warm_up_embedder(embedder)
     embedder_load_seconds = float(getattr(embedder, "load_seconds", 0.0) or 0.0)
 
     # Fix pack 7: the limiter counts the static prompt parts with this tokenizer.
     # Load it during startup, so a cold load can never be charged to a question's
     # deadline. The tokenizer itself is cached per model inside core.tokens.
     token_started = time.perf_counter()
-    token_counter = E5TokenCounter()
-    token_counter.count_tokens(config.EMBEDDING_WARMUP_QUERY)
+    with startup.stage(startup.STAGE_TOKENIZER_LOAD):
+        token_counter = E5TokenCounter()
+        token_counter.count_tokens(config.EMBEDDING_WARMUP_QUERY)
     logger.info(
         "tokenizer_warmup_ms=%.1f",
         (time.perf_counter() - token_started) * 1000.0,
@@ -157,21 +181,24 @@ def build_runtime(settings: Settings) -> AppRuntime:
     # Fix pack 8 (N4): the Groq client import and construction cost seconds and
     # used to happen inside the first question's (untimed) post-processing. Build
     # it here, during startup, like the embedder and the tokenizer.
-    llm_client = GroqLLMClient(api_key=settings.groq.api_key)
-    llm_warmup_ms = llm_client.warm_up()
+    with startup.stage(startup.STAGE_LLM_CLIENT):
+        llm_client = GroqLLMClient(api_key=settings.groq.api_key)
+        llm_warmup_ms = llm_client.warm_up()
     logger.info("llm_client_warmup_ms=%.1f", llm_warmup_ms)
 
     # Fix pack 9 (O6a): the first question still paid 1,240 ms for the first
     # Chroma query and the metadata read. Exercise both here; no model call.
-    retrieval_warmup = warm_up_knowledge_base(version.handle, embedder)
+    with startup.stage(startup.STAGE_RETRIEVAL_WARMUP):
+        retrieval_warmup = warm_up_knowledge_base(version.handle, embedder)
     logger.info("retrieval_warmup=%s", retrieval_warmup)
 
-    pipeline = RagPipeline(
-        knowledge_base=version.handle,
-        llm=llm_client,
-        embedder=embedder,
-        token_counter=token_counter,
-    )
+    with startup.stage(startup.STAGE_PIPELINE_BUILD):
+        pipeline = RagPipeline(
+            knowledge_base=version.handle,
+            llm=llm_client,
+            embedder=embedder,
+            token_counter=token_counter,
+        )
 
     load_seconds = round(time.perf_counter() - started, 2)
     runtime = AppRuntime(
@@ -469,6 +496,14 @@ def render_chat(runtime: AppRuntime) -> None:
     _render_examples(runtime)
 
 
+def _render_startup_failure(exc: BaseException) -> None:
+    """Log the single whitelisted error line and show its code under our text."""
+    failure = startup.describe_failure(exc)
+    startup.log_failure(failure)
+    st.title(T.CHAT_TITLE)
+    st.error(T.with_error_code(T.TECHNICAL_ERROR, failure.code))
+
+
 def main() -> None:
     st.set_page_config(
         page_title=config.APP_TITLE,
@@ -476,12 +511,18 @@ def main() -> None:
     )
     _init_state()
 
+    if _SQLITE_FAILURE is not None:
+        _render_startup_failure(_SQLITE_FAILURE)
+        return
+
     try:
-        settings = load_app_settings()
-    except SettingsError:
-        logger.warning("app_settings_incomplete")
+        with startup.stage(startup.STAGE_SETTINGS):
+            settings = load_app_settings()
+    except SettingsError as exc:
+        failure = startup.describe_failure(exc)
+        startup.log_failure(failure)
         st.title(T.LOGIN_TITLE)
-        st.error(T.LOGIN_CONFIG_ERROR)
+        st.error(T.with_error_code(T.LOGIN_CONFIG_ERROR, failure.code))
         return
 
     if not st.session_state.get("authenticated"):
@@ -490,10 +531,11 @@ def main() -> None:
 
     try:
         runtime = active_runtime()
-    except (KBSyncError, SettingsError, WarmupError, SQLiteVersionError):
-        logger.warning("app_runtime_unavailable")
-        st.title(T.CHAT_TITLE)
-        st.error(T.TECHNICAL_ERROR)
+    except Exception as exc:
+        # Broad on purpose (fix pack 13a): any failure while building the
+        # authenticated screen must name its stage in the log and its code on
+        # screen, instead of dying silently behind our generic message.
+        _render_startup_failure(exc)
         return
 
     render_chat(runtime)

@@ -20,6 +20,14 @@ class ManifestError(RuntimeError):
     """Raised when a manifest is unusable or was produced by a different model."""
 
 
+class ManifestModelMismatchError(ManifestError):
+    """The artifact was built with another embedding model."""
+
+
+class ManifestSchemaError(ManifestError):
+    """The manifest records an unsupported schema version."""
+
+
 class ChromaSync:
     """Handles zipping, manifest creation, and Drive synchronization."""
 
@@ -80,14 +88,14 @@ class ChromaSync:
 
         model = manifest.get("embedding_model")
         if model != expected_model:
-            raise ManifestError(
+            raise ManifestModelMismatchError(
                 f"Manifest was built with embedding model '{model}' but config "
                 f"expects '{expected_model}'. Refusing to load the knowledge base."
             )
 
         schema_version = manifest.get("schema_version")
         if schema_version != config.MANIFEST_SCHEMA_VERSION:
-            raise ManifestError(
+            raise ManifestSchemaError(
                 f"Manifest schema_version '{schema_version}' is not supported "
                 f"(expected '{config.MANIFEST_SCHEMA_VERSION}')"
             )

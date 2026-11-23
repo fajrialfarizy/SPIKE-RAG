@@ -66,3 +66,11 @@ TECHNICAL_ERROR = (
     "Maaf, terjadi kendala teknis saat memuat aplikasi. Silakan muat ulang "
     "halaman ini beberapa saat lagi."
 )
+# Fix pack 13a: one short whitelisted cause under the message, so a report of
+# "the app did not load" carries the code the log already recorded.
+ERROR_CODE_PREFIX = "Kode: "
+
+
+def with_error_code(text, code):
+    """Append "Kode: <code>" to a fixed text; the code is never free-form."""
+    return f"{text}\n\n{ERROR_CODE_PREFIX}{code}"

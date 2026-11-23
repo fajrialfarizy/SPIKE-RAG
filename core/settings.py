@@ -21,7 +21,20 @@ import config
 
 
 class SettingsError(RuntimeError):
-    """Raised when a required setting is missing or invalid."""
+    """
+    Raised when a required setting is missing or invalid.
+
+    Fix pack 13a: ``key`` carries the section.key name (never the value), so the
+    app can show ``CFG/missing_key:<section.key>`` and the log can name it.
+    """
+
+    def __init__(self, message: str, key: Optional[str] = None):
+        super().__init__(message)
+        self.key = key
+
+    @property
+    def code(self) -> str:
+        return f"CFG/missing_key:{self.key or 'settings'}"
 
 
 @dataclass(frozen=True)
@@ -67,7 +80,9 @@ def _section(source: Mapping[str, Any], name: str) -> dict:
     try:
         return dict(section)
     except (TypeError, ValueError) as exc:
-        raise SettingsError(f"Settings section '{name}' is not a table.") from exc
+        raise SettingsError(
+            f"Settings section '{name}' is not a table.", key=name
+        ) from exc
 
 
 def _pick(
@@ -85,9 +100,9 @@ def _pick(
     return None
 
 
-def _require(value: Optional[str], human_name: str) -> str:
+def _require(value: Optional[str], human_name: str, key: str) -> str:
     if value is None:
-        raise SettingsError(f"Missing required setting: {human_name}.")
+        raise SettingsError(f"Missing required setting: {human_name}.", key=key)
     return value
 
 
@@ -111,6 +126,7 @@ def load_settings(
             config.SETTINGS_ENV_AUTH_USERNAME,
         ),
         "[auth] username (or LAB_PRESTASI_USERNAME)",
+        "auth.username",
     )
     password_hash = _require(
         _pick(
@@ -120,10 +136,12 @@ def load_settings(
             config.SETTINGS_ENV_AUTH_PASSWORD_HASH,
         ),
         "[auth] password_hash (or LAB_PRESTASI_PASSWORD_HASH)",
+        "auth.password_hash",
     )
     api_key = _require(
         _pick(groq_section, "api_key", environ, config.LLM_API_KEY_ENV_VAR),
         "[groq] api_key (or GROQ_API_KEY)",
+        "groq.api_key",
     )
 
     source = (
@@ -132,7 +150,7 @@ def load_settings(
     ).strip().lower()
     if source not in config.KB_SOURCES:
         raise SettingsError(
-            f"[kb] source must be one of {config.KB_SOURCES}, not '{source}'."
+            f"[kb] source must be one of {config.KB_SOURCES}.", key="kb.source"
         )
 
     local_dir_value = (
@@ -174,7 +192,8 @@ def load_settings(
     )
     if source == config.KB_SOURCE_DRIVE and not drive_folder_id:
         raise SettingsError(
-            "[kb] drive_folder_id is required when [kb] source is 'drive'."
+            "[kb] drive_folder_id is required when [kb] source is 'drive'.",
+            key="kb.drive_folder_id",
         )
 
     manifest_ttl_raw = kb_section.get("manifest_ttl_seconds")
@@ -183,9 +202,15 @@ def load_settings(
             config.KB_MANIFEST_TTL_SECONDS if manifest_ttl_raw is None else manifest_ttl_raw
         )
     except (TypeError, ValueError) as exc:
-        raise SettingsError("[kb] manifest_ttl_seconds must be a number.") from exc
+        raise SettingsError(
+            "[kb] manifest_ttl_seconds must be a number.",
+            key="kb.manifest_ttl_seconds",
+        ) from exc
     if manifest_ttl < 0:
-        raise SettingsError("[kb] manifest_ttl_seconds must not be negative.")
+        raise SettingsError(
+            "[kb] manifest_ttl_seconds must not be negative.",
+            key="kb.manifest_ttl_seconds",
+        )
 
     return Settings(
         auth=AuthSettings(username=username, password_hash=password_hash),

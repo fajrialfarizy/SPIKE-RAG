@@ -32,6 +32,9 @@ _TOKENIZER_CACHE_LOCK = threading.Lock()
 class TokenCounterError(RuntimeError):
     """Raised when the configured tokenizer cannot be loaded or used."""
 
+    # Fix pack 13a: the tokenizer belongs to the embedding model.
+    code = "EMB/load_failed"
+
 
 class EstimatorTokenCounter:
     """Conservative estimate: the larger of word count and chars/ratio."""

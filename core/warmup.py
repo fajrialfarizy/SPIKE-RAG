@@ -21,6 +21,9 @@ logger = logging.getLogger("core_warmup")
 class WarmupError(RuntimeError):
     """Raised when the warm-up query does not produce a usable vector."""
 
+    # Fix pack 13a: the code the app shows under its generic message.
+    code = "RT/warmup"
+
 
 def warm_up_embedder(embedder: Any, clock=time.perf_counter) -> float:
     """Run one dummy query embedding and return its duration in milliseconds."""

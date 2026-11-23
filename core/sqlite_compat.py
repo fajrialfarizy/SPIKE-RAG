@@ -23,6 +23,9 @@ import config
 class SQLiteVersionError(RuntimeError):
     """Raised when no usable SQLite version can be provided."""
 
+    # Fix pack 13a: the code the app shows under its generic message.
+    code = "DB/sqlite_version"
+
 
 def parse_version(version: str) -> Tuple[int, ...]:
     parts = []

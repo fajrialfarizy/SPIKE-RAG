@@ -23,19 +23,27 @@ from typing import Any, Dict, List, Optional, Sequence
 import chromadb
 
 import config
+from core import startup
 from ingestion.sync import ChromaSync, ManifestError
 
 
 class KnowledgeBaseError(RuntimeError):
     """Base class for knowledge base loading and integrity failures."""
 
+    # Fix pack 13a: the code the app shows under its generic message.
+    code = "DB/chroma_open"
+
 
 class KnowledgeBaseNotFoundError(KnowledgeBaseError):
     """Raised when the persist directory has no usable collection."""
 
+    code = "DB/chroma_open"
+
 
 class EmbeddingContractError(KnowledgeBaseError):
     """Raised when the artifact was built with another model or dimension."""
+
+    code = "KB/model_mismatch"
 
 
 @dataclass(frozen=True)
@@ -76,19 +84,23 @@ class KnowledgeBase:
         self.embedding_model = embedding_model
         self.expected_dimension = expected_dimension
 
-        if not self.persist_dir.exists():
-            raise KnowledgeBaseNotFoundError(
-                f"Knowledge base directory '{self.persist_dir}' does not exist. "
-                "Run ingestion (or download the artifact) before serving questions."
-            )
+        with startup.stage(startup.STAGE_CHROMA_OPEN):
+            if not self.persist_dir.exists():
+                raise KnowledgeBaseNotFoundError(
+                    f"Knowledge base directory '{self.persist_dir}' does not exist. "
+                    "Run ingestion (or download the artifact) before serving questions."
+                )
 
-        self.client = client or chromadb.PersistentClient(path=str(self.persist_dir))
-        self.collection = self._open_collection()
-        self._validate_collection()
-        self._validate_dimension()
+            self.client = client or chromadb.PersistentClient(path=str(self.persist_dir))
+            self.collection = self._open_collection()
+
+        with startup.stage(startup.STAGE_MODEL_VALIDATE):
+            self._validate_collection()
+            self._validate_dimension()
 
         if manifest_path is not None:
-            self._validate_manifest(Path(manifest_path))
+            with startup.stage(startup.STAGE_MANIFEST_VALIDATE):
+                self._validate_manifest(Path(manifest_path))
 
     # -- loading -----------------------------------------------------------
     def _open_collection(self):
