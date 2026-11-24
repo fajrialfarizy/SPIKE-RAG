@@ -179,14 +179,18 @@ layar), salin hasilnya. Password mentah tidak pernah disimpan.
 
 ## 7. Log dan memori
 
-**Manage app → Logs.** Cari satu baris startup:
+**Manage app → Logs.** Cari baris build dan satu baris startup:
 
 ```
+app_build commit=<7 karakter hash atau unknown>
 app_startup embedding_runtime=sentence-transformers embedding_model=intfloat/multilingual-e5-small
 kb_version=... kb_source=drive chunks=... kb_load_seconds=... embedder_load_seconds=...
 embedder_warmup_ms=... total_load_seconds=... rss_mb=...
 ```
 
+- `app_build commit=...` = commit yang benar-benar dijalankan host. Cocokkan dengan
+  commit terakhir di branch `phase3-app`; `unknown` berarti `.git` tidak tersedia di
+  host (bukan tanda deploy gagal). Satu baris per proses, ditulis sebelum login.
 - `rss_mb` = memori proses saat siap; bandingkan dengan kuota mesin (bagian 0).
 - `kb_load_seconds` (Drive + Chroma) dan `embedder_load_seconds` (model) memisahkan
   penyebab lambat.

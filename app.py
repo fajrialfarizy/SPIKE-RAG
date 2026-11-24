@@ -25,12 +25,16 @@ import streamlit as st
 
 import app_texts as T
 import config
-from core import startup
+from core import build_info, startup
 from core.sqlite_compat import SQLiteVersionError, ensure_sqlite_version
 
 # Fix pack 13a: one INFO handler on stdout, so the stage lines and the single
 # error line reach the cloud log, which keeps stdout.
 startup.configure_logging()
+
+# ONE line naming the deployed commit, so the cloud log says which code is live.
+# The module remembers it already ran, so a Streamlit rerun does not repeat it.
+build_info.log_build_once()
 
 # Must happen before chromadb is imported (it needs SQLite >= 3.35).
 _SQLITE_FAILURE: Optional[BaseException] = None
