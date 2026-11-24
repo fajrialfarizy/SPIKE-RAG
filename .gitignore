@@ -60,3 +60,9 @@ htmlcov/
 Thumbs.db
 .idea/
 .vscode/
+
+# Phase 4 evaluation inputs/outputs that must not enter git
+# (the generated PDFs, the eval Chroma artifacts and the raw-output cache).
+data/eval_corpus/
+data/artifacts_eval/
+data/eval_cache/
