@@ -347,7 +347,7 @@ class RagPipeline:
             "alias_map": {},
             "incidents": {"unknown_alias": 0, "fabricated_report_id": 0,
                           "pii_masked": 0, "prompt_leak": 0,
-                          "security_request": 0, "example_copy_guard": 0},
+                          "security_request": 0},
             "missing_report_ids": [],
             "used_fallback": False,
             "input_truncated": False,
@@ -523,10 +523,6 @@ class RagPipeline:
                 # Fix pack 11 (S2b): a failed analyzer call is reported too.
                 self._record_failed_call(state, "analyzer", exc)
                 raise
-            if analysis.example_copy_guard:
-                # E2f: counts only, never the question text.
-                state["incidents"]["example_copy_guard"] += 1
-                logger.info("chat_example_copy_guard search_query_replaced=true")
             state["mode"] = analysis.mode.value
             state["filters"] = analysis.filters
             state["used_fallback"] = analysis.used_fallback

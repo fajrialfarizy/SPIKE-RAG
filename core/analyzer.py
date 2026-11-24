@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import config
@@ -71,8 +71,6 @@ class AnalyzerResult:
     dropped_reasons: List[str] = field(default_factory=list)
     deterministic_filters: Dict[str, List[Any]] = field(default_factory=dict)
     compare_by: Optional[str] = None
-    # Fix pack E2f: the analyzer reused a few-shot example query verbatim.
-    example_copy_guard: bool = False
 
 
 def parse_analyzer_output(raw: str) -> Dict[str, Any]:
@@ -363,53 +361,6 @@ def validate_analysis(
     )
 
 
-# -- few-shot example-copy guard (E2f) -----------------------------------
-def _example_query_map() -> Dict[str, str]:
-    """normalized example search_query -> normalized example question.
-
-    The analyzer sometimes answered an unrelated question with the negative
-    example's query ("bantuan menulis kode python"), which then became the
-    retrieval query. The examples are data here, so the guard is a lookup and not
-    a heuristic on the question text.
-    """
-    mapping: Dict[str, str] = {}
-    for question, answer in prompts.ANALYZER_FEW_SHOT_EXAMPLES:
-        try:
-            parsed = json.loads(answer)
-        except json.JSONDecodeError:  # pragma: no cover - examples are valid JSON
-            continue
-        query = parsed.get("search_query")
-        if isinstance(query, str) and query.strip():
-            mapping[_normalize_key(query)] = _normalize_key(question)
-    return mapping
-
-
-EXAMPLE_QUERY_MAP = _example_query_map()
-
-
-def guard_example_copy(result: AnalyzerResult, question: str) -> AnalyzerResult:
-    """Replace a search_query copied from a few-shot example (fix pack E2f).
-
-    Fires only when the analyzer's query equals an example's query AND the user's
-    question is not that example's question. The replacement is the user's own
-    question text, so retrieval searches what was asked. Deterministic, and the
-    caller counts the incident: no question text is logged.
-    """
-    example_question = EXAMPLE_QUERY_MAP.get(_normalize_key(result.search_query))
-    if example_question is None:
-        return result
-    if _normalize_key(question) == example_question:
-        # The user really asked the example question; its query is legitimate.
-        return result
-    replacement = " ".join(question.split())[: config.ANALYZER_MAX_SEARCH_QUERY_CHARS]
-    if not replacement or _normalize_key(replacement) == _normalize_key(
-        result.search_query
-    ):
-        return result
-    logger.warning("analyzer_example_copy_guard replaced search_query")
-    return replace(result, search_query=replacement, example_copy_guard=True)
-
-
 def fallback_result(
     question: str,
     *,
@@ -486,15 +437,12 @@ class Analyzer:
                 model_latency_ms=completion.model_latency_ms,
             )
 
-        return guard_example_copy(
-            validate_analysis(
-                payload,
-                question,
-                latency_ms=latency_ms,
-                usage=completion.usage.to_dict(),
-                raw_output=completion.content,
-                queue_wait_ms=completion.queue_wait_ms,
-                model_latency_ms=completion.model_latency_ms,
-            ),
+        return validate_analysis(
+            payload,
             question,
+            latency_ms=latency_ms,
+            usage=completion.usage.to_dict(),
+            raw_output=completion.content,
+            queue_wait_ms=completion.queue_wait_ms,
+            model_latency_ms=completion.model_latency_ms,
         )
